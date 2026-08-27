@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# runtime state
+config/*.db
+config/*.db-wal
+config/*.db-shm
+config/config.yaml
+config/profiles.yaml
+scratch/
+bench-out/
+*.log

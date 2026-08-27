@@ -1,0 +1,53 @@
+# Synology Container Manager -> Project -> import this file.
+#
+# The render node's group id was confirmed on this NAS as 937:
+#     $ stat -c '%g' /dev/dri/renderD128
+#     937
+# Without group_add the container can see /dev/dri but not open it, and every
+# hardware encode fails. Re-check this if DSM is ever upgraded.
+
+services:
+  vidsmasharr:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: vidsmasharr:latest
+    container_name: vidsmasharr
+
+    devices:
+      # QuickSync. Nothing hardware-accelerated works without this.
+      - /dev/dri:/dev/dri
+    group_add:
+      # 937 = the render node's gid on this NAS, confirmed above.
+      - "937"
+
+    environment:
+      # Apollo Lake is Gen9. iHD is the modern driver; if the capability report
+      # shows VAAPI failing to initialise, try i965 here instead.
+      - LIBVA_DRIVER_NAME=iHD
+      - TZ=${TZ:-Australia/Sydney}
+      - VIDSMASHARR_CONFIG_DIR=/config
+
+    volumes:
+      - ./config:/config
+      # Scratch must be on a volume with room for one full-size encode plus
+      # headroom. Do not point this at /tmp -- that is RAM on DSM.
+      - /volume1/scratch/vidsmasharr:/scratch
+      # Media needs write access: the atomic swap replaces files in place.
+      - /volume1/media:/media
+      # Plex's database, read-only. We copy it before opening, never touch the
+      # live file while Plex is running.
+      - /volume1/PlexMediaServer/AppData/Plex Media Server/Plug-in Support/Databases:/plexdb:ro
+
+    ports:
+      - "8330:8330"
+
+    # Keep it out of Plex's way: the whole point is that the NAS stays usable.
+    cpus: 3.5
+    mem_limit: 1g
+    restart: unless-stopped
+
+    # Phase 0: run the benchmark instead of the (not yet built) web service.
+    #   docker compose run --rm vidsmasharr bench.capability
+    #   docker compose run --rm vidsmasharr bench --libraries /media/tv
+    command: ["bench.capability"]

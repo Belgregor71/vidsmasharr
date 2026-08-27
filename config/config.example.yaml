@@ -1,0 +1,98 @@
+# Copy to config/config.yaml and edit. Every value here is the default unless
+# noted; you only need to set what differs.
+
+# Paths as the CONTAINER sees them (see the volume mounts in docker-compose.yml).
+libraries:
+  - /media/tv
+  - /media/movies
+
+scratch_dir: /scratch
+config_dir: /config
+
+plex:
+  enabled: true
+  url: http://192.168.1.10:32400
+  # Settings -> Account, or view any item's XML and copy X-Plex-Token.
+  token: ""
+  # Mounted read-only; we copy the DB before reading it.
+  db_dir: /plexdb
+  # Plex records paths as IT sees them. Map them onto container paths.
+  path_map:
+    "/volume1/media": "/media"
+
+sonarr:
+  enabled: true
+  url: http://192.168.1.10:8989
+  api_key: ""
+  path_map:
+    "/volume1/media": "/media"
+
+radarr:
+  enabled: true
+  url: http://192.168.1.10:7878
+  api_key: ""
+  path_map:
+    "/volume1/media": "/media"
+
+schedule:
+  night_start: "23:00"
+  night_end: "07:00"
+  night_threads: 4
+  day_enabled: true
+  day_threads: 1
+  day_nice: 15
+  # Suspend encoding while anyone is actually watching, so we don't fight Plex
+  # for /dev/dri and the disks.
+  pause_when_streaming: true
+
+quality:
+  # You rewatch films and burn through shows, so films get the stricter target.
+  movie_vmaf: 95.0
+  tv_vmaf: 92.0
+  # Never spend CPU for a rounding error.
+  savings_floor_pct: 20.0
+  vmaf_sample_count: 3
+  vmaf_sample_seconds: 20
+
+encoder:
+  # "auto" uses whatever the benchmark found working. Override only if you have
+  # a reason to.
+  preferred: auto
+  vaapi_device: /dev/dri/renderD128
+  x265_preset: slow
+  # Optional list of paths that are worth hours of software x265. Everything
+  # else uses hardware.
+  keepers_file: /config/keepers.txt
+
+audio:
+  keep_languages: [eng, und]
+  passthrough_codecs: [eac3, ac3, aac]
+  passthrough_max_bitrate: 640000
+  target_codec: eac3
+  target_bitrate: 640k
+  target_channels: 6
+  keep_forced_subs: true
+
+policy:
+  target_bitrate_1080p: 3500000
+  target_bitrate_720p: 1800000
+  target_bitrate_sd: 1000000
+  # SDR 4K is downscaled to 1080p. HDR 4K is never touched -- Apollo Lake can
+  # only encode HEVC in 8-bit, which would destroy the HDR grade permanently.
+  downscale_sdr_4k: true
+  max_queued_per_title: 25
+  audio_remux_min_saving_bytes: 314572800
+
+safety:
+  # Refuse to start a job that would take free space below this. 250GB.
+  min_free_bytes: 268435456000
+  scratch_headroom_factor: 1.5
+  # Leave FALSE until a first batch has been watched on both TVs. While false
+  # the worker encodes and verifies but never removes the original.
+  delete_original_on_success: false
+  max_deletes_per_run: 50
+  # Leave TRUE until you have read a dry-run plan and agree with it.
+  dry_run: true
+
+web_port: 8330
+log_level: INFO

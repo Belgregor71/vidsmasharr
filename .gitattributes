@@ -1,0 +1,20 @@
+# This repo is authored on Windows and built/run on Linux (the NAS). Anything
+# the shell or Docker parses must keep LF endings, or the build dies with
+# "$'\r': command not found" -- a confusing failure to debug remotely.
+* text=auto eol=lf
+
+*.py    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.sh    text eol=lf
+Dockerfile text eol=lf
+.gitignore text eol=lf
+
+# Never touch binaries.
+*.mkv binary
+*.mp4 binary
+*.db  binary
+*.png binary
+*.jpg binary
