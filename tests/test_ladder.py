@@ -121,3 +121,40 @@ def test_software_crf_keeps_fractional_precision():
     entry = build_ladder(measurements, {"tv": 93.5})[0]
     assert entry.quality == 23.5
     assert entry.quality_flag == "crf"
+
+
+def test_ladder_refuses_settings_that_grow_the_file():
+    # Regression from the first real NAS run: an already-x265 720p source came
+    # back at 299% size at qp=20, and the ladder happily emitted it as a rung.
+    bloated = [
+        _m(encoder="hevc_vaapi", quality=q, vmaf=v, ratio=r)
+        for q, v, r in [(20, 89.4, 2.99), (23, 87.6, 1.98),
+                        (26, 85.2, 1.34), (29, 81.5, 1.05)]
+    ]
+    entries = build_ladder(bloated, {"movie": 95.0, "tv": 92.0})
+
+    assert len(entries) == 1
+    assert entries[0].content_class == "unusable"
+    assert "NO USABLE SETTING" in entries[0].note
+    # Crucially, no movie/tv rung was emitted for production to act on.
+    assert not [e for e in entries if e.content_class in ("movie", "tv")]
+
+
+def test_ladder_still_works_when_only_some_settings_shrink():
+    mixed = [
+        _m(encoder="hevc_vaapi", quality=q, vmaf=v, ratio=r)
+        for q, v, r in [(20, 97.0, 1.20), (23, 95.0, 0.88),
+                        (26, 92.0, 0.61), (29, 88.0, 0.44)]
+    ]
+    entries = build_ladder(mixed, {"tv": 92.0})
+    assert [e.content_class for e in entries] == ["tv"]
+    assert entries[0].expected_size_ratio < 1.0
+
+
+def test_ladder_calibrates_on_the_mean_not_the_worst_frame():
+    # A single corrupt frame tanks p1 but must not move the chosen setting.
+    good = [_m(quality=q, vmaf=v, ratio=0.6) for q, v in SWEEP]
+    for m in good:
+        m.vmaf_p1 = 4.3          # the artifact seen on the first real run
+    entry = build_ladder(good, {"tv": 92.0})[0]
+    assert entry.quality == 26   # from the means, exactly as if p1 were sane

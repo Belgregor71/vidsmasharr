@@ -16,10 +16,20 @@ import yaml
 
 from bench.runner import Measurement
 
-# A single bad scene is more noticeable than a good average, so the ladder is
-# built against the 1st-percentile score where we have it.
-PRIMARY_METRIC = "vmaf_p1"
-FALLBACK_METRIC = "vmaf_mean"
+# Calibrate on the mean. The 1st percentile is the better *perceptual* signal in
+# principle, but on a 30-second clip it degenerates into "worst single frame",
+# where one misaligned or corrupt frame drags it to near zero and takes the
+# whole ladder with it. Observed on the first real run: mean 89, p1 4.3.
+# So: mean drives the ladder, and the low-end scores are kept as a warning
+# signal that an encode had bad frames worth investigating.
+PRIMARY_METRIC = "vmaf_mean"
+FALLBACK_METRIC = "vmaf_p1"
+
+# An encode that makes the file bigger is never a valid ladder rung. Sources
+# that are already efficient (a good x265 encode) will do exactly this at every
+# quality setting, and the honest answer there is "do not re-encode this", not
+# "pick the least-bad setting".
+MAX_USEFUL_SIZE_RATIO = 0.95
 
 
 @dataclass
@@ -129,6 +139,30 @@ def build_ladder(
         quality_fps = [(m.quality, m.fps) for m in members if m.fps]
 
         if len(quality_vmaf) < 2:
+            continue
+
+        # If no tested setting actually shrinks the file, this source class is
+        # already more efficient than our encoder can manage. Emitting a rung
+        # here would tell production to triple the size of every such file.
+        shrinking = [(q, r) for q, r in quality_size if r <= MAX_USEFUL_SIZE_RATIO]
+        if quality_size and not shrinking:
+            best = min(r for _, r in quality_size)
+            entries.append(
+                LadderEntry(
+                    encoder=encoder, content_class="unusable", resolution=resolution,
+                    target_vmaf=0.0, quality=0.0,
+                    quality_flag=QUALITY_FLAG.get(encoder, "q"),
+                    expected_size_ratio=round(best, 4), expected_fps=None,
+                    extrapolated=True, samples=len(members),
+                    note=(
+                        f"NO USABLE SETTING: the smallest output was {best * 100:.0f}% "
+                        "of the source, i.e. re-encoding makes these files bigger. "
+                        "The sample was almost certainly already-efficient content "
+                        "(HEVC/x265). Benchmark on the H.264 files that policy would "
+                        "actually re-encode."
+                    ),
+                )
+            )
             continue
 
         for content_class, target in targets.items():

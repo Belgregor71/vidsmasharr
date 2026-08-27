@@ -68,6 +68,42 @@ def _run_timed(cmd: list[str], timeout: int) -> tuple[subprocess.CompletedProces
     return result, wall, cpu
 
 
+# Codecs that are already at or beyond what our hardware encoder achieves.
+# Re-encoding these produces LARGER files -- observed on the first real run: a
+# 720p x265 source came out at 299% of its original size at qp=20. Policy skips
+# such files, so calibrating on them measures something we will never do.
+EFFICIENT_CODECS = {"hevc", "h265", "av1", "vp9"}
+
+# Below this, a file is already small enough that it is not a policy candidate
+# and makes a poor calibration subject.
+MIN_CANDIDATE_BITRATE = {"2160p": 8_000_000, "1080p": 2_500_000,
+                         "720p": 1_200_000, "sd": 600_000}
+
+
+def calibration_reject_reason(info: MediaInfo) -> str | None:
+    """Why this file is a bad thing to calibrate on, or None if it is fine.
+
+    The ladder must be built from files the policy would actually re-encode.
+    Anything else measures a job we will never run.
+    """
+    if info.is_protected_hdr:
+        return f"{info.hdr_type} is protected content and never re-encoded"
+    if not info.v_codec:
+        return "no readable video stream"
+    if info.v_codec in EFFICIENT_CODECS:
+        return (
+            f"already {info.v_codec} -- re-encoding this makes it bigger, "
+            "and policy would skip it"
+        )
+    floor = MIN_CANDIDATE_BITRATE.get(info.resolution_tier, 1_000_000)
+    if info.v_bitrate and info.v_bitrate < floor:
+        return (
+            f"{info.v_bitrate / 1e6:.1f}Mbps is already below the "
+            f"{floor / 1e6:.1f}Mbps floor for {info.resolution_tier}"
+        )
+    return None
+
+
 # ------------------------------------------------------------------ clips
 
 
@@ -80,6 +116,7 @@ def extract_clips(
     per_source: int = 2,
     seconds: int = 30,
     content_class: str = "tv",
+    max_sources: int | None = None,
 ) -> list[Clip]:
     """Cut representative clips out of real library files.
 
@@ -89,8 +126,11 @@ def extract_clips(
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     clips: list[Clip] = []
+    accepted = 0
 
     for source in sources:
+        if max_sources is not None and accepted >= max_sources:
+            break
         try:
             info = probe(source, ffprobe)
         except Exception as exc:  # noqa: BLE001 - a bad file must not stop the run
@@ -100,9 +140,9 @@ def extract_clips(
         if info.duration_s < seconds * 3:
             print(f"  ! skipping {source.name}: too short to sample")
             continue
-        if info.is_protected_hdr:
-            # Benchmarking HDR is pointless: policy never sends it to hardware.
-            print(f"  ! skipping {source.name}: {info.hdr_type} is protected content")
+        reject = calibration_reject_reason(info)
+        if reject:
+            print(f"  ! skipping {source.name}: {reject}")
             continue
 
         usable_start = info.duration_s * 0.10
@@ -135,6 +175,7 @@ def extract_clips(
             )
             print(f"  + {label}: {clip_info.resolution_tier} {clip_info.v_codec} "
                   f"{dest.stat().st_size / 1e6:.0f}MB")
+        accepted += 1
     return clips
 
 
@@ -180,7 +221,12 @@ def score_vmaf(
     frames = data.get("frames") or []
     if frames:
         scores = sorted(f.get("metrics", {}).get("vmaf", 0.0) for f in frames)
-        p1 = scores[max(0, int(len(scores) * 0.01) - 1)]
+        # Genuine 1st percentile. Note this is only meaningful with a few
+        # hundred frames or more; on a short clip it collapses toward the
+        # single worst frame, which is why the ladder calibrates on the mean
+        # and treats this as a warning signal only.
+        index = min(len(scores) - 1, max(0, round(len(scores) * 0.01)))
+        p1 = scores[index]
         if mean is None:
             mean = sum(scores) / len(scores)
         if minimum is None:

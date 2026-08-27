@@ -98,33 +98,38 @@ def run(args: argparse.Namespace) -> int:
             except Exception as exc:  # noqa: BLE001
                 print(f"  ! could not probe {path.name}: {exc}")
     else:
-        print(f"Sampling {args.sources} files from: {', '.join(str(p) for p in libraries)}")
-        sources = sample_files(libraries, count=args.sources, seed=args.seed)
+        # Oversample: most of a Plex library is already-HEVC or low-bitrate
+        # content that policy would skip, and calibrating on those measures a
+        # job we will never run. Take a wide sample and let the filter choose.
+        pool = args.sources * args.oversample
+        print(f"Sampling up to {pool} files to find {args.sources} calibration "
+              f"candidate(s) in: {', '.join(str(p) for p in libraries)}")
+        sources = sample_files(libraries, count=pool, seed=args.seed)
         if not sources:
-            print("
-No media files found. Here is what those paths actually are:
-")
+            print("\nNo media files found. Here is what those paths actually are:\n")
             print(diagnose_roots(libraries))
             print(
-                "
-Remember these are paths as the CONTAINER sees them: /media is "
+                "\nRemember these are paths as the CONTAINER sees them: /media is "
                 "whatever the compose file mounts there, not a host path."
             )
             return 2
-        for found in sources:
-            print(f"  . candidate: {found.path.name} ({found.size_bytes / 1e9:.1f}GB)")
         clips = runner.extract_clips(
             [f.path for f in sources], clips_dir,
             ffmpeg=ffmpeg, ffprobe=ffprobe,
             per_source=args.clips_per_source, seconds=args.clip_seconds,
-            content_class=args.content_class,
+            content_class=args.content_class, max_sources=args.sources,
         )
 
     if not clips:
         print(
-            "\nNo usable clips. Every sampled file was HDR, too short, or unreadable.\n"
-            "HDR is protected content and is never benchmarked -- try --sources with a "
-            "higher number, or point --libraries at your TV library."
+            "\nNo usable calibration clips. Every sampled file was rejected for a "
+            "reason listed above -- typically already HEVC/x265, HDR (protected), "
+            "or already below the bitrate floor.\n\n"
+            "That is informative in itself: if most of this library is already "
+            "efficient, there is little encoding work worth doing here and the "
+            "value is in deduplication instead.\n\n"
+            "Try --oversample 40 to search harder, or point --libraries at a "
+            "library with more H.264 content."
         )
         return 2
     print(f"\n{len(clips)} clip(s) ready in {clips_dir}")
@@ -313,7 +318,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="ffmpeg binary used for VMAF scoring (needs libvmaf)")
 
     parser.add_argument("--sources", type=int, default=4,
-                        help="how many library files to sample")
+                        help="how many usable calibration files to end up with")
+    parser.add_argument("--oversample", type=int, default=12,
+                        help="files examined per wanted source; most get "
+                             "rejected as already-efficient")
     parser.add_argument("--clips-per-source", type=int, default=2)
     parser.add_argument("--clip-seconds", type=int, default=30)
     parser.add_argument("--content-class", default="tv", choices=["tv", "movie"])
