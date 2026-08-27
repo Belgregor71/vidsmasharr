@@ -195,7 +195,7 @@ def measure(
     clip: Clip, encoder: str, quality: float, *, ffmpeg: str, work_dir: Path,
     vaapi_device: str, target_height: int | None = None, preset: str = "slow",
     threads: int | None = None, run_vmaf: bool = True, timeout: int = 7200,
-    hw_decode: bool = False,
+    hw_decode: bool = False, ffmpeg_vmaf: str | None = None,
 ) -> Measurement:
     spec = VideoSpec(
         encoder=encoder, quality=quality, target_height=target_height,
@@ -244,7 +244,7 @@ def measure(
 
     if run_vmaf:
         mean, minimum, p1, error = score_vmaf(
-            dest, clip.path, ffmpeg=ffmpeg, work_dir=work_dir,
+            dest, clip.path, ffmpeg=ffmpeg_vmaf or ffmpeg, work_dir=work_dir,
             reference_height=clip.info.v_height if target_height else None,
         )
         measurement.vmaf_mean, measurement.vmaf_min, measurement.vmaf_p1 = mean, minimum, p1

@@ -1,6 +1,15 @@
-# jellyfin-ffmpeg rather than Debian's ffmpeg: it ships VAAPI, QSV, the Intel
-# media driver and libvmaf already built and wired together. Rolling our own
-# ffmpeg for Apollo Lake is avoidable work, and Debian's build has no libvmaf.
+# Two ffmpeg binaries, on purpose:
+#
+#   /usr/lib/jellyfin-ffmpeg  -- encodes. Ships VAAPI, QSV and the Intel media
+#       driver already wired together, which is exactly what Apollo Lake needs.
+#       Confirmed working on the DS1019+ (hevc_vaapi, hevc_qsv both encode).
+#       It does NOT include libvmaf: it is built for streaming, not analysis.
+#
+#   /opt/ffmpeg-vmaf/bin/ffmpeg -- scores only. A static GPL build that has
+#       libvmaf. No hardware support, and it never needs any: it only reads two
+#       files and emits a number.
+#
+# Trying to make one binary do both means either losing VAAPI or losing VMAF.
 FROM debian:bookworm-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -47,13 +56,29 @@ https://repo.jellyfin.org/debian bookworm main" \
         intel-media-va-driver-non-free i965-va-driver-shaders \
         || echo "NOTE: non-free Intel drivers unavailable; using the free drivers."; \
     \
-    apt-get purge -y curl gnupg; \
+    # jellyfin-ffmpeg is built for streaming and does NOT include libvmaf, so it
+    # cannot score quality. Encoding needs its VAAPI/QSV support; scoring needs
+    # libvmaf. Rather than compromise on either, carry a second static build
+    # used only for VMAF. It never encodes, so its lack of VAAPI is irrelevant.
+    apt-get install -y --no-install-recommends xz-utils; \
+    ( curl -fsSL --retry 3 \
+        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" \
+        -o /tmp/ffvmaf.tar.xz \
+      && mkdir -p /opt/ffmpeg-vmaf \
+      && tar xJf /tmp/ffvmaf.tar.xz -C /opt/ffmpeg-vmaf --strip-components=1 \
+      && /opt/ffmpeg-vmaf/bin/ffmpeg -hide_banner -filters | grep -q libvmaf \
+      && echo "VMAF binary installed with libvmaf support" ) \
+      || echo "WARNING: VMAF-capable ffmpeg unavailable; the ladder cannot be calibrated."; \
+    rm -f /tmp/ffvmaf.tar.xz; \
+    \
+    apt-get purge -y curl gnupg xz-utils; \
     apt-get autoremove -y; \
     rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/usr/lib/jellyfin-ffmpeg:${PATH}" \
     VIDSMASHARR_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg \
     VIDSMASHARR_FFPROBE=/usr/lib/jellyfin-ffmpeg/ffprobe \
+    VIDSMASHARR_FFMPEG_VMAF=/opt/ffmpeg-vmaf/bin/ffmpeg \
     VIDSMASHARR_CONFIG_DIR=/config \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1

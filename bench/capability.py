@@ -36,6 +36,10 @@ class Capabilities:
     ffmpeg: str = ""
     ffmpeg_version: str = ""
     ffprobe_version: str = ""
+    # Scoring runs on a separate binary: jellyfin-ffmpeg has VAAPI but no
+    # libvmaf, so one binary cannot do both jobs.
+    ffmpeg_vmaf: str = ""
+    ffmpeg_vmaf_version: str = ""
     has_libvmaf: bool = False
     render_nodes: list[str] = field(default_factory=list)
     render_node_readable: bool = False
@@ -154,21 +158,32 @@ def _test_encode(ffmpeg: str, encoder: str, device: str) -> tuple[bool, str | No
 
 
 def detect(ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe",
-           device: str | None = None) -> Capabilities:
+           device: str | None = None, ffmpeg_vmaf: str | None = None) -> Capabilities:
     caps = Capabilities(ffmpeg=ffmpeg)
     caps.ffmpeg_version = _tool_version(ffmpeg)
     caps.ffprobe_version = _tool_version(ffprobe)
+    caps.ffmpeg_vmaf = ffmpeg_vmaf or os.environ.get("VIDSMASHARR_FFMPEG_VMAF") or ffmpeg
     caps.cpu_model, caps.cpu_count = _cpu_info()
 
     if not caps.ffmpeg_version:
         caps.notes.append(f"ffmpeg not runnable at {ffmpeg!r} -- nothing else can be checked")
         return caps
 
-    caps.has_libvmaf = _has_filter(ffmpeg, "libvmaf")
+    caps.ffmpeg_vmaf_version = _tool_version(caps.ffmpeg_vmaf)
+    caps.has_libvmaf = _has_filter(caps.ffmpeg_vmaf, "libvmaf")
     if not caps.has_libvmaf:
+        same = caps.ffmpeg_vmaf == ffmpeg
         caps.notes.append(
-            "ffmpeg has no libvmaf filter: quality verification will be unavailable. "
-            "Use a jellyfin-ffmpeg build."
+            f"No libvmaf in {caps.ffmpeg_vmaf}: the quality ladder cannot be "
+            "calibrated and encodes cannot be quality-verified. "
+            + (
+                "jellyfin-ffmpeg is built for streaming and omits libvmaf, so the "
+                "image carries a second static build at /opt/ffmpeg-vmaf/bin/ffmpeg "
+                "purely for scoring -- it looks like that download failed at build "
+                "time. Rebuild with --no-cache."
+                if same else
+                "Check that the scoring binary exists and was built with libvmaf."
+            )
         )
 
     caps.render_nodes = _find_render_nodes()
@@ -215,7 +230,8 @@ def detect(ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe",
 def render_text(caps: Capabilities) -> str:
     lines = ["=== vidsmasharr capability report ===", ""]
     lines.append(f"CPU            : {caps.cpu_model or 'unknown'} ({caps.cpu_count} threads)")
-    lines.append(f"ffmpeg         : {caps.ffmpeg_version or 'NOT FOUND'}")
+    lines.append(f"ffmpeg (encode): {caps.ffmpeg_version or 'NOT FOUND'}")
+    lines.append(f"ffmpeg (score) : {caps.ffmpeg_vmaf_version or 'NOT FOUND'}")
     lines.append(f"libvmaf filter : {'yes' if caps.has_libvmaf else 'NO'}")
     lines.append(f"render nodes   : {', '.join(caps.render_nodes) or 'NONE'}")
     lines.append(

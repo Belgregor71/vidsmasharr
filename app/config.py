@@ -136,9 +136,17 @@ class Config(BaseModel):
 
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
+    # Scoring binary. jellyfin-ffmpeg has VAAPI but no libvmaf, so quality
+    # scoring runs on a separate static build. Defaults to `ffmpeg` when unset,
+    # which is right for a workstation where one binary does both.
+    ffmpeg_vmaf: str = ""
     web_host: str = "0.0.0.0"
     web_port: int = 8330
     log_level: str = "INFO"
+
+    @property
+    def vmaf_ffmpeg(self) -> str:
+        return self.ffmpeg_vmaf or self.ffmpeg
 
     @property
     def db_path(self) -> Path:

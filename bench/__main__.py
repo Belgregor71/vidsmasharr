@@ -45,6 +45,8 @@ def run(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config) if args.config else None)
     ffmpeg = args.ffmpeg or config.ffmpeg
     ffprobe = args.ffprobe or config.ffprobe
+    ffmpeg_vmaf = (args.ffmpeg_vmaf or os.environ.get("VIDSMASHARR_FFMPEG_VMAF")
+                   or config.ffmpeg_vmaf or ffmpeg)
 
     work_dir = Path(args.work_dir)
     clips_dir = work_dir / "clips"
@@ -55,7 +57,7 @@ def run(args: argparse.Namespace) -> int:
 
     # ---------------------------------------------------------- 1. capability
     _print_header("STEP 1/5  capability detection")
-    caps = capability.detect(ffmpeg, ffprobe, args.device)
+    caps = capability.detect(ffmpeg, ffprobe, args.device, ffmpeg_vmaf)
     print(capability.render_text(caps))
 
     device = args.device or (caps.render_nodes[0] if caps.render_nodes
@@ -176,6 +178,7 @@ def run(args: argparse.Namespace) -> int:
             threads=args.threads if encoder.startswith("lib") else None,
             run_vmaf=caps.has_libvmaf,
             hw_decode=decode_modes.get(encoder, False),
+            ffmpeg_vmaf=ffmpeg_vmaf,
         )
         measurements.append(m)
         if not m.ok:
@@ -298,6 +301,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default=None, help="VAAPI/QSV render node")
     parser.add_argument("--ffmpeg", default=None)
     parser.add_argument("--ffprobe", default=None)
+    parser.add_argument("--ffmpeg-vmaf", default=None,
+                        help="ffmpeg binary used for VMAF scoring (needs libvmaf)")
 
     parser.add_argument("--sources", type=int, default=4,
                         help="how many library files to sample")
