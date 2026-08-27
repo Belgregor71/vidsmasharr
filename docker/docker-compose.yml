@@ -29,7 +29,10 @@ services:
       - VIDSMASHARR_CONFIG_DIR=/config
 
     volumes:
-      - ./config:/config
+      # ../ because compose resolves relative paths against THIS file's
+      # directory, not your working directory. This file lives in docker/, so
+      # ./config would mean docker/config -- which does not exist.
+      - ../config:/config
       # Scratch must be on a volume with room for one full-size encode plus
       # headroom. Do not point this at /tmp -- that is RAM on DSM.
       - /volume1/scratch/vidsmasharr:/scratch
