@@ -1,4 +1,4 @@
-# Handover — end of session 1 (2026-08-27)
+# Handover — sessions 1–2 (2026-08-27 → 28)
 
 Read this first. It records what is *verified* on the real hardware versus what
 is still assumed, so tomorrow doesn't re-litigate settled decisions or trust
@@ -8,19 +8,31 @@ unverified ones.
 
 ## Where we are
 
-**Phase 0 (calibration) is written and unit-tested. It has not yet produced
-real numbers from the NAS.** The blocker chain is nearly cleared — five fixes
-deep — with one rebuild outstanding.
+**Phase 0 is written, unit-tested, and fully unblocked on the NAS.** Six
+deployment fixes deep, the container now reports every encoder working and
+libvmaf present. The calibration run itself has not been done yet.
 
 - Repo: https://github.com/Belgregor71/vidsmasharr (public)
 - 5 commits, `main`, local and remote in sync
 - 44 tests passing, ~2,700 lines
 - Nothing has touched the media library. Phase 0 only reads and writes scratch.
 
-## THE ONE COMMAND TO RUN FIRST
+## Container status: VERIFIED WORKING (2026-08-28)
 
-The VMAF fix (commit `5ced61c`) is pushed but **not yet built or verified on the
-NAS**. Everything below depends on it working.
+The capability report came back clean on the real DS1019+:
+
+```
+ffmpeg (encode): 7.1.4-Jellyfin
+ffmpeg (score) : N-126277-ga8c7afa7d7-20260826
+libvmaf filter : yes
+hevc_vaapi WORKS | hevc_qsv WORKS | h264_vaapi WORKS | libx265 WORKS | libx264 WORKS
+preferred hardware encoder: hevc_vaapi
+```
+
+No warnings. The two-binary split works. **The next thing to do is the
+calibration run itself** — see Next Steps.
+
+<details><summary>Rebuild command, if the container ever needs recreating</summary>
 
 ```sh
 cd /volume1/docker && sudo rm -rf vidsmasharr vidsmasharr-main \
@@ -30,9 +42,7 @@ cd /volume1/docker && sudo rm -rf vidsmasharr vidsmasharr-main \
   && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.capability
 ```
 
-Success looks like `libvmaf filter : yes` and two different ffmpeg versions on
-the `(encode)` and `(score)` lines. If the ~100MB static ffmpeg download failed,
-the build still succeeds but prints a warning and libvmaf stays `NO`.
+</details>
 
 ---
 
@@ -48,7 +58,8 @@ Do not re-derive these; they came from the box.
 | `hevc_qsv` | **WORKS** |
 | `h264_vaapi`, `libx265`, `libx264` | WORK |
 | vainfo HEVC encode | yes |
-| Encode ffmpeg | jellyfin-ffmpeg 7.1.4 — **has no libvmaf** |
+| Encode ffmpeg | jellyfin-ffmpeg 7.1.4 — no libvmaf (by design) |
+| Score ffmpeg | static N-126277 at `/opt/ffmpeg-vmaf/bin/ffmpeg` — **libvmaf confirmed** |
 | Media share | `/volume1/Media/{Movies,Television,Music}` (capital M) |
 | Live Plex DB | `/volume1/PlexMediaServer/AppData/Plex Media Server/Plug-in Support/Databases/` |
 | Volume | 28TB total, **25TB used, 3.9TB free, 87%** |
@@ -136,7 +147,7 @@ started**. See `README.md` for the phase table.
 
 ## Next steps, in order
 
-1. **Run the rebuild command above.** Confirm `libvmaf filter : yes`.
+1. ~~Rebuild and confirm libvmaf.~~ **Done 2026-08-28.**
 2. **Run the real benchmark** against the Television library:
    ```sh
    sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr \
