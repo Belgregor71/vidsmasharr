@@ -34,7 +34,9 @@ services:
       # headroom. Do not point this at /tmp -- that is RAM on DSM.
       - /volume1/scratch/vidsmasharr:/scratch
       # Media needs write access: the atomic swap replaces files in place.
-      - /volume1/media:/media
+      # Capital M -- the Synology share is /volume1/Media and Linux is
+      # case-sensitive, so a lowercase path fails the bind mount outright.
+      - /volume1/Media:/media
       # Plex's database, read-only. We copy it before opening, never touch the
       # live file while Plex is running.
       - /volume1/PlexMediaServer/AppData/Plex Media Server/Plug-in Support/Databases:/plexdb:ro

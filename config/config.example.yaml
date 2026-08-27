@@ -3,8 +3,8 @@
 
 # Paths as the CONTAINER sees them (see the volume mounts in docker-compose.yml).
 libraries:
-  - /media/tv
-  - /media/movies
+  - /media/Television
+  - /media/Movies
 
 scratch_dir: /scratch
 config_dir: /config
@@ -18,21 +18,21 @@ plex:
   db_dir: /plexdb
   # Plex records paths as IT sees them. Map them onto container paths.
   path_map:
-    "/volume1/media": "/media"
+    "/volume1/Media": "/media"
 
 sonarr:
   enabled: true
   url: http://192.168.1.10:8989
   api_key: ""
   path_map:
-    "/volume1/media": "/media"
+    "/volume1/Media": "/media"
 
 radarr:
   enabled: true
   url: http://192.168.1.10:7878
   api_key: ""
   path_map:
-    "/volume1/media": "/media"
+    "/volume1/Media": "/media"
 
 schedule:
   night_start: "23:00"
