@@ -8,9 +8,17 @@ unverified ones.
 
 ## Where we are
 
-**Phase 0 is written, unit-tested, and fully unblocked on the NAS.** Six
-deployment fixes deep, the container now reports every encoder working and
-libvmaf present. The calibration run itself has not been done yet.
+**Phase 0 is unblocked and the library census is done. The calibration run is
+still outstanding.**
+
+The census settled the strategic question: **encoding is genuinely worth it
+here.** The library is 77% H.264 by file count and 91% by bytes, with roughly
+**8-12 TB reclaimable** against 3.9 TB free. The earlier worry that the library
+might already be x265 was wrong -- that first sampled file was unrepresentative.
+
+The constraint is now CPU time, not opportunity. ~15,400 candidate files is
+roughly **two years** of overnight encoding to do exhaustively, so queue order
+decides everything.
 
 - Repo: https://github.com/Belgregor71/vidsmasharr (public)
 - 5 commits, `main`, local and remote in sync
@@ -46,6 +54,55 @@ cd /volume1/docker && sudo rm -rf vidsmasharr vidsmasharr-main \
 
 ---
 
+## Library census (2026-08-28, 300-file random sample)
+
+Run it again any time with:
+`bench.census --libraries /media/tv /media/movies /media/Anime`
+
+| Codec | Files | Bytes |
+|---|---|---|
+| **h264** | **77.3%** | **91.0%** |
+| hevc | 11.0% | 5.3% |
+| mpeg4 | 10.3% | 2.9% |
+| av1 | 1.0% | 0.8% |
+| msmpeg4v3 | 0.3% | 0.1% |
+
+Resolution: 1080p 40.3%, SD 35.7%, 720p 24.0%.
+Dynamic range: SDR 90.7%, 10-bit 9.3%.
+
+**Encode candidates: 66% of files, 86% of bytes.**
+Rejected: 62 already-low-bitrate, 28 protected 10-bit, 11 already-efficient codec.
+
+Extrapolated to the whole library:
+- ~15,436 candidate files (**note: far more than the 6,000 originally assumed**)
+- ~20.1 TB of candidate material
+- 8.1 TB / 10.1 TB / 12.1 TB reclaimed at 40% / 50% / 60% reduction
+
+### How to read it
+
+- **Encoding is worth building.** Phases 2-3 are justified; this is not a
+  dedupe-only project.
+- **The 9.3% "unknown-10bit" is almost certainly the Anime library, not HDR.**
+  10-bit x264/x265 is standard for anime because it suppresses banding in flat
+  gradients. Protecting it is still correct -- 8-bit hardware output would
+  reintroduce exactly the banding those encodes exist to avoid -- but it should
+  not be mistaken for HDR movies.
+- **SD is 35.7% of files but a small share of bytes.** Encoding SD has poor
+  GB-saved-per-CPU-hour. The planner must not treat all files as equal.
+- **Size skew is the whole strategy.** On a realistic distribution the largest
+  20% of candidates hold roughly 60-65% of the available reclaim. Ordering the
+  queue by predicted saving is worth more than any encoder tuning. The census
+  now prints this curve directly.
+
+### Not yet measured
+
+The one real fps figure so far (35.5 fps, 30.4 min/file) came from a **720p
+HEVC** source that policy would skip, so it is not valid. Encode speed on
+representative 1080p H.264 is still unknown, and every timeline estimate
+depends on it.
+
+---
+
 ## Verified on the actual DS1019+
 
 Do not re-derive these; they came from the box.
@@ -61,7 +118,7 @@ Do not re-derive these; they came from the box.
 | Encode ffmpeg | jellyfin-ffmpeg 7.1.4 — no libvmaf (by design) |
 | Score ffmpeg | static N-126277 at `/opt/ffmpeg-vmaf/bin/ffmpeg` — **libvmaf confirmed** |
 | Media share | `/volume1/data/media/{tv,movies,Anime,music,youtube}` |
-| Decoy share | `/volume1/Media` exists but is **not** the Plex library |
+| Decoy share | `/volume1/Media` is 198MB, an empty leftover -- **not** the Plex library and not a duplicate |
 | Live Plex DB | `/volume1/PlexMediaServer/AppData/Plex Media Server/Plug-in Support/Databases/` |
 | Volume | 28TB total, **25TB used, 3.9TB free, 87%** |
 | Scratch | `/volume1/scratch/vidsmasharr` (created) |
@@ -152,23 +209,37 @@ started**. See `README.md` for the phase table.
 ## Next steps, in order
 
 1. ~~Rebuild and confirm libvmaf.~~ **Done 2026-08-28.**
-2. **Run the real benchmark** against the Television library:
+2. ~~Library census.~~ **Done 2026-08-28** — encoding is worth it, see above.
+3. **Run the real calibration** on representative H.264 content. The candidate
+   filter now rejects already-efficient sources automatically, so this should
+   land on real material:
    ```sh
-   sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr \
-     bench --libraries /media/tv --sources 4
+   sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr      bench --libraries /media/tv /media/movies --sources 4 --keep-clips
    ```
-   Takes an evening. Produces `config/profiles.yaml` and a timeline projection.
-   Expect the projection to be sobering — 25TB is well beyond a year of
-   overnight encoding, which is *why* dedupe runs first.
-3. **Verify direct play** — encode 2–3 real files with the ladder settings, play
-   one on each TV, confirm Plex says "Direct Play" not "Transcode". **Do not
-   skip this.** If a TV transcodes, the codec choice must change before any bulk
-   work.
-4. **Then start Phase 1** (scan + identify + duplicate report). This is where
-   the user first gets real value: on a 25TB library, duplicates are very likely
-   the largest single reclaim and cost almost no CPU.
+   Background it — the full matrix is hours, and an SSH drop kills it:
+   ```sh
+   sudo nohup docker compose -f docker/docker-compose.yml run --rm -T vidsmasharr      bench --libraries /media/tv /media/movies --sources 4 --keep-clips      > /volume1/scratch/vidsmasharr/bench.log 2>&1 &
+   ```
+   What matters in the output: **fps on 1080p H.264** (replaces the invalid
+   35.5 figure) and **size ratio at the chosen QP** (validates the 40-60%
+   reduction assumption the whole 8-12 TB estimate rests on).
+4. **Verify direct play** — encode 2-3 real files at the ladder settings, play
+   one on each TV, confirm Plex says "Direct Play" not "Transcode". Do not skip
+   this; if either TV transcodes the codec choice must change.
+5. **Phase 1** — scan, identify via Plex/*arr, duplicate report + UI.
 
----
+### A design consequence the census forces
+
+The planner's priority formula was `est_bytes_saved / est_cpu_seconds`. The
+census shows that is even more important than assumed, and suggests two
+refinements worth building into Phase 2:
+
+- **Size-first ordering delivers most of the win early.** Encoding the largest
+  20% of candidates reclaims ~60-65% of the available space. The queue should
+  be explicitly biased that way rather than relying on the ratio alone.
+- **SD content may not be worth encoding at all.** 35.7% of files, a small
+  share of bytes, and the same per-file overhead. Consider a configurable
+  minimum source size below which files are skipped regardless of ratio.
 
 ## Open questions for the user
 

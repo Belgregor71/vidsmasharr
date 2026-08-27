@@ -71,6 +71,7 @@ def run(args: argparse.Namespace) -> int:
     hdr: Counter[str] = Counter()
     reject_reasons: Counter[str] = Counter()
 
+    candidate_sizes: list[int] = []
     candidate_count = 0
     candidate_bytes = 0
     sampled_bytes = 0
@@ -96,6 +97,7 @@ def run(args: argparse.Namespace) -> int:
         if reason is None:
             candidate_count += 1
             candidate_bytes += found.size_bytes
+            candidate_sizes.append(found.size_bytes)
         else:
             # Collapse to a short category for counting.
             key = ("already efficient codec" if "already" in reason and "bigger" in reason
@@ -155,6 +157,30 @@ def run(args: argparse.Namespace) -> int:
     for pct in (40, 50, 60):
         print(f"      at {pct}% reduction -> "
               f"~{_size(projected_bytes * pct / 100)} reclaimed")
+
+    # ---- where the reclaim actually concentrates ---------------------------
+    # File size is wildly uneven: a 1080p feature holds as many bytes as fifty
+    # SD episodes, but costs nothing like fifty times the CPU to encode. So the
+    # order the queue runs in decides whether the first months reclaim most of
+    # the available space or a rounding error of it.
+    if len(candidate_sizes) >= 20:
+        section("Where the reclaim concentrates")
+        ordered = sorted(candidate_sizes, reverse=True)
+        total_candidate = sum(ordered)
+        print("  Encoding only the largest candidates, biggest first:\n")
+        print(f"  {'share of files':>16}   {'of the reclaim':>14}   "
+              f"{'files':>7}   {'reclaimed @50%':>15}")
+        for share in (0.10, 0.20, 0.30, 0.50, 1.00):
+            cut = max(1, int(len(ordered) * share))
+            got = sum(ordered[:cut]) / total_candidate
+            files = projected_files * share
+            reclaimed = projected_bytes * got * 0.50
+            print(f"  {share * 100:>14.0f}%   {got * 100:>13.0f}%   "
+                  f"{files:>7,.0f}   {_size(reclaimed):>15}")
+        top20 = sum(ordered[:max(1, int(len(ordered) * 0.20))]) / total_candidate
+        print(f"\n  The largest 20% of candidates hold {top20 * 100:.0f}% of "
+              f"the available reclaim.")
+        print("  Ordering the queue by size is worth more than any encoder tuning.")
 
     section("Read this as")
     if candidate_share < 0.15:
