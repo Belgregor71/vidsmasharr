@@ -25,7 +25,7 @@ from pathlib import Path
 
 from app.config import load_config
 from app.db import Database
-from app.scan.walker import sample_files
+from app.scan.walker import diagnose_roots, sample_files
 from bench import capability, ladder as ladder_mod, runner
 
 # Sweep points. Wide enough to bracket the VMAF targets from both sides, coarse
@@ -101,7 +101,15 @@ def run(args: argparse.Namespace) -> int:
         print(f"Sampling {args.sources} files from: {', '.join(str(p) for p in libraries)}")
         sources = sample_files(libraries, count=args.sources, seed=args.seed)
         if not sources:
-            print("No media files found in the given library paths.")
+            print("
+No media files found. Here is what those paths actually are:
+")
+            print(diagnose_roots(libraries))
+            print(
+                "
+Remember these are paths as the CONTAINER sees them: /media is "
+                "whatever the compose file mounts there, not a host path."
+            )
             return 2
         for found in sources:
             print(f"  . candidate: {found.path.name} ({found.size_bytes / 1e9:.1f}GB)")

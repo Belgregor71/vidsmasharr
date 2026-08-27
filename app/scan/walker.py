@@ -106,3 +106,70 @@ def sample_files(
             if slot < count:
                 reservoir[slot] = found
     return reservoir
+
+
+def diagnose_roots(roots: list[Path] | list[str], *, max_children: int = 40) -> str:
+    """Explain why a library path yielded nothing.
+
+    Path mismatches between the host and the container are the single most
+    common setup failure, so a bare "no media files found" is a dead end. This
+    reports what each path actually is and what lives near it, so the right
+    path is obvious rather than guessed at.
+    """
+    lines: list[str] = []
+
+    for raw in roots:
+        root = Path(raw)
+        lines.append(f"  {root}")
+
+        if not root.exists():
+            lines.append("    -> does NOT exist inside the container.")
+            # Walk up to the nearest real ancestor and show what IS there.
+            ancestor = root.parent
+            while ancestor != ancestor.parent and not ancestor.is_dir():
+                ancestor = ancestor.parent
+            if ancestor.is_dir():
+                try:
+                    children = sorted(
+                        p.name for p in ancestor.iterdir()
+                        if p.is_dir() and not p.name.startswith(("@", "#", "."))
+                    )
+                except OSError as exc:
+                    lines.append(f"    -> cannot list {ancestor}: {exc}")
+                    continue
+                shown = ", ".join(children[:max_children]) or "(no visible subdirectories)"
+                lines.append(f"    -> {ancestor} does exist and contains: {shown}")
+                # Case-insensitive near-miss is worth calling out explicitly.
+                target = root.name.lower()
+                near = [c for c in children if c.lower() == target]
+                if near:
+                    lines.append(
+                        f"    -> NOTE: '{near[0]}' differs only by case. "
+                        f"Linux paths are case-sensitive."
+                    )
+            continue
+
+        if not root.is_dir():
+            lines.append("    -> exists but is a file, not a directory.")
+            continue
+
+        try:
+            children = sorted(p.name for p in root.iterdir() if p.is_dir())
+        except OSError as exc:
+            lines.append(f"    -> exists but cannot be listed: {exc}")
+            continue
+
+        media_count = sum(1 for _ in iter_media_files([root]))
+        if media_count:
+            lines.append(f"    -> {media_count} media file(s) found here.")
+        else:
+            visible = [c for c in children if not c.startswith(("@", "#", "."))]
+            shown = ", ".join(visible[:max_children]) or "(no subdirectories)"
+            lines.append(
+                f"    -> exists, but no media files matched. Contains: {shown}"
+            )
+            lines.append(
+                "    -> files under 50MB, files named *sample*, and extras/"
+                "featurettes folders are skipped by design."
+            )
+    return "\n".join(lines)
