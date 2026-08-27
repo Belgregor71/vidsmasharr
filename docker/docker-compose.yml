@@ -43,7 +43,14 @@ services:
       - "8330:8330"
 
     # Keep it out of Plex's way: the whole point is that the NAS stays usable.
-    cpus: 3.5
+    #
+    # NOT `cpus:` -- the DSM kernel has no CFS bandwidth control, so a hard quota
+    # fails with "NanoCPUs can not be set". cpu_shares is a relative weight that
+    # works here: at 512 against the default 1024, this container yields roughly
+    # 2:1 to Plex whenever they compete, while still using the whole CPU when
+    # the NAS is otherwise idle. That is the behaviour we actually want for
+    # overnight encoding anyway.
+    cpu_shares: 512
     mem_limit: 1g
     restart: unless-stopped
 
