@@ -60,7 +60,8 @@ Do not re-derive these; they came from the box.
 | vainfo HEVC encode | yes |
 | Encode ffmpeg | jellyfin-ffmpeg 7.1.4 — no libvmaf (by design) |
 | Score ffmpeg | static N-126277 at `/opt/ffmpeg-vmaf/bin/ffmpeg` — **libvmaf confirmed** |
-| Media share | `/volume1/Media/{Movies,Television,Music}` (capital M) |
+| Media share | `/volume1/data/media/{tv,movies,Anime,music,youtube}` |
+| Decoy share | `/volume1/Media` exists but is **not** the Plex library |
 | Live Plex DB | `/volume1/PlexMediaServer/AppData/Plex Media Server/Plug-in Support/Databases/` |
 | Volume | 28TB total, **25TB used, 3.9TB free, 87%** |
 | Scratch | `/volume1/scratch/vidsmasharr` (created) |
@@ -73,7 +74,10 @@ single biggest open risk in the whole project.
 
 1. **DSM has no CFS bandwidth control.** `cpus:` in compose fails with
    "NanoCPUs can not be set". Use `cpu_shares` (now 512).
-2. **Linux is case-sensitive.** The share is `/volume1/Media`, not `/media`.
+2. **Two similar-looking media shares.** The live library is
+   `/volume1/data/media` (lowercase `tv`, `movies`). `/volume1/Media` also
+   exists with `Movies`/`Television` inside and is a decoy — not the Plex
+   library. Linux paths are case-sensitive, so neither forgives a near miss.
 3. **Compose resolves relative volumes against the compose file's directory**,
    not the working directory. Hence `../config:/config`.
 4. **jellyfin-ffmpeg omits libvmaf.** It is built for streaming. Encoding needs
@@ -151,7 +155,7 @@ started**. See `README.md` for the phase table.
 2. **Run the real benchmark** against the Television library:
    ```sh
    sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr \
-     bench --libraries /media/Television --sources 4
+     bench --libraries /media/tv --sources 4
    ```
    Takes an evening. Produces `config/profiles.yaml` and a timeline projection.
    Expect the projection to be sobering — 25TB is well beyond a year of
