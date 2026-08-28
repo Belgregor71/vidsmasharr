@@ -49,6 +49,10 @@ class Measurement:
     # Source frame rate, so the ladder can turn out_bytes into an output
     # bitrate -- which is what the planner actually estimates with.
     src_fps: float | None = None
+    # movie | tv, carried from the clip this came from. The ladder groups on it:
+    # a movie sweep and a TV sweep at the same resolution are two different
+    # populations and pooling them corrupts both.
+    content_class: str = ""
     vmaf_mean: float | None = None
     vmaf_min: float | None = None
     vmaf_p1: float | None = None
@@ -221,7 +225,7 @@ def measure(
         out_width=None, out_height=target_height or clip.info.v_height,
         frames=None, wall_seconds=0.0, cpu_seconds=0.0, fps=None,
         in_bytes=in_bytes, out_bytes=0, size_ratio=None,
-        src_fps=clip.info.v_fps,
+        src_fps=clip.info.v_fps, content_class=clip.content_class,
     )
 
     try:
@@ -286,15 +290,15 @@ def persist(db: Database, run_id: str, measurements: list[Measurement]) -> None:
                 run_id, clip, encoder, quality_key, quality_value,
                 src_width, src_height, out_width, out_height, frames,
                 wall_seconds, cpu_seconds, fps, in_bytes, out_bytes, size_ratio,
-                vmaf_mean, vmaf_min, vmaf_p1, ok, error, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                vmaf_mean, vmaf_min, vmaf_p1, ok, error, created_at, content_class
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 run_id, m.clip, m.encoder, QUALITY_FLAG.get(m.encoder, "q"), m.quality,
                 m.src_width, m.src_height, m.out_width, m.out_height, m.frames,
                 m.wall_seconds, m.cpu_seconds, m.fps, m.in_bytes, m.out_bytes,
                 m.size_ratio, m.vmaf_mean, m.vmaf_min, m.vmaf_p1,
-                1 if m.ok else 0, m.error, now,
+                1 if m.ok else 0, m.error, now, m.content_class or None,
             ),
         )
 

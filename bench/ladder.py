@@ -37,6 +37,17 @@ MAX_USEFUL_SIZE_RATIO = 0.95
 # verification allows, no single setting can satisfy both of them.
 WIDE_SPREAD_VMAF = 3.0
 
+# Measurements stored before the content class was recorded. They cannot be
+# split, so they stand in for every target and say so.
+UNKNOWN_CLASS = "unknown"
+
+# A clip whose output is LARGER than its source and which still scores badly is
+# not hard content -- it is a broken comparison. You cannot spend more bits than
+# the original and lose that much quality; the reference and the distorted
+# stream are not aligned. Such a clip poisons a rung, because VMAF is
+# aggregated by minimum.
+BROKEN_CLIP_VMAF = 85.0
+
 
 @dataclass
 class LadderEntry:
@@ -182,6 +193,34 @@ def _expected_at(points: list[tuple[float, float]], quality: float) -> float:
     return points[-1][1]
 
 
+def _drop_broken_clips(
+    members: list[Measurement],
+) -> tuple[list[Measurement], set[str]]:
+    """Remove clips whose measurements are impossible, and name them.
+
+    Seen on the 2026-08-28 run: one of two clips from the same film scored
+    75-78 VMAF at every setting while its output was up to 1.9x the size of the
+    source. Its sibling scored 93-96 on the same sweep. Spending more bits than
+    the original cannot cost eighteen points of VMAF -- the reference and the
+    distorted stream were not aligned. Because VMAF is aggregated by minimum,
+    that one clip decided the whole rung.
+    """
+    by_clip: dict[str, list[Measurement]] = {}
+    for m in members:
+        by_clip.setdefault(m.clip, []).append(m)
+
+    broken: set[str] = set()
+    for clip, rows in by_clip.items():
+        scores = [v for v in (_metric(m) for m in rows) if v is not None]
+        inflating = [m.size_ratio for m in rows if m.size_ratio and m.size_ratio > 1.0]
+        if scores and inflating and max(scores) < BROKEN_CLIP_VMAF:
+            broken.add(clip)
+
+    if not broken:
+        return members, broken
+    return [m for m in members if m.clip not in broken], broken
+
+
 def build_ladder(
     measurements: list[Measurement],
     targets: dict[str, float],
@@ -192,11 +231,34 @@ def build_ladder(
     usable = [m for m in measurements if m.ok and _metric(m) is not None]
     entries: list[LadderEntry] = []
 
-    groups: dict[tuple[str, str], list[Measurement]] = {}
+    # Grouped by content class as well as encoder and resolution. A movie sweep
+    # and a TV sweep at the same resolution are two different populations: the
+    # movie target is 95 and the TV target is 92, they are usually measured on
+    # sources of very different fatness, and pooling them corrupts both curves
+    # at once -- the VMAF minimum picks up the other class's hardest clip, and
+    # the mean size ratio is an average of two things nobody will ever encode.
+    #
+    # A measurement recorded before the class was stored has an empty one. Those
+    # keep the old behaviour of standing in for every target, because that is
+    # the only honest thing to do with them, and say so in the rung's note.
+    groups: dict[tuple[str, str, str], list[Measurement]] = {}
     for m in usable:
-        groups.setdefault((m.encoder, _resolution_of(m)), []).append(m)
+        groups.setdefault(
+            (m.encoder, m.content_class or UNKNOWN_CLASS, _resolution_of(m)), []
+        ).append(m)
 
-    for (encoder, resolution), members in sorted(groups.items()):
+    for (encoder, group_class, resolution), members in sorted(groups.items()):
+        # Which targets this group is allowed to speak for.
+        if group_class == UNKNOWN_CLASS:
+            group_targets = dict(targets)
+        elif group_class in targets:
+            group_targets = {group_class: targets[group_class]}
+        else:
+            continue
+        members, broken = _drop_broken_clips(members)
+        if not members:
+            continue
+
         raw_vmaf = [(m.quality, _metric(m)) for m in members]  # type: ignore[misc]
         raw_size = [(m.quality, m.size_ratio) for m in members if m.size_ratio]
 
@@ -239,7 +301,7 @@ def build_ladder(
             )
             continue
 
-        for content_class, target in targets.items():
+        for content_class, target in group_targets.items():
             quality, extrapolated = _interpolate(quality_vmaf, target)
             # Hardware encoders take an integer QP. Floor rather than round, so
             # measurement noise can only ever move us toward higher quality --
@@ -247,6 +309,22 @@ def build_ladder(
             if encoder.endswith(("_vaapi", "_qsv")):
                 quality = float(int(quality))
             note = ""
+            if broken:
+                note = (
+                    f"excluded {len(broken)} clip(s) whose output was larger than "
+                    f"the source and still scored below {BROKEN_CLIP_VMAF:g} VMAF: "
+                    f"{', '.join(sorted(broken))}. That is a misaligned comparison, "
+                    f"not hard content -- more bits cannot cost that much quality. "
+                    f"Left in, it would have set this rung on its own, because "
+                    f"VMAF is aggregated by minimum."
+                )
+            if group_class == UNKNOWN_CLASS:
+                extra_class = (
+                    "measured before the content class was recorded, so this rung "
+                    "stands in for every target and may be pooling movie and TV "
+                    "sources. Re-run the benchmark to separate them."
+                )
+                note = f"{note} {extra_class}".strip() if note else extra_class
             vmaf_spread = _spread(raw_vmaf, quality)
             if vmaf_spread >= WIDE_SPREAD_VMAF:
                 note = (
@@ -458,6 +536,7 @@ def load_measurements(db, run_ids: str | list[str]) -> list[Measurement]:
             cpu_seconds=row["cpu_seconds"] or 0.0, fps=row["fps"],
             in_bytes=row["in_bytes"] or 0, out_bytes=row["out_bytes"] or 0,
             size_ratio=row["size_ratio"], src_fps=None,
+            content_class=row["content_class"] or "",
             vmaf_mean=row["vmaf_mean"], vmaf_min=row["vmaf_min"],
             vmaf_p1=row["vmaf_p1"], ok=bool(row["ok"]), error=row["error"],
         )
@@ -505,6 +584,13 @@ def main(argv: list[str] | None = None) -> int:
                              "instead of replacing it")
     parser.add_argument("--all-runs", action="store_true",
                         help="build from every stored run")
+    parser.add_argument("--run-class", nargs="+", default=None,
+                        metavar="RUN_ID=CLASS",
+                        help="label a stored run whose measurements predate the "
+                             "content_class column, e.g. --run-class "
+                             "9ece8030435f=tv 4bd2f1a9=movie. --content-class was "
+                             "always one value for a whole run, so this recovers "
+                             "what that run already asserted rather than guessing")
     parser.add_argument("--out", default=None,
                         help="where to write profiles.yaml (default: the config dir)")
     parser.add_argument("--dry-run", action="store_true",
@@ -537,6 +623,29 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     measurements = load_measurements(db, run_ids)
+
+    if args.run_class:
+        labels = {}
+        for pair in args.run_class:
+            run, _, klass = pair.partition("=")
+            if klass not in ("tv", "movie"):
+                print(f"--run-class wants RUN_ID=tv or RUN_ID=movie, got {pair!r}")
+                return 2
+            if run not in known:
+                print(f"--run-class names a run that is not stored: {run}")
+                return 2
+            labels[run] = klass
+        # Re-read per run so each measurement knows which one it came from;
+        # load_measurements flattens that away.
+        measurements = []
+        for run in run_ids:
+            for m in load_measurements(db, [run]):
+                if run in labels:
+                    m.content_class = labels[run]
+                measurements.append(m)
+        for run, klass in labels.items():
+            print(f"labelled run {run} as {klass}")
+
     scored = [m for m in measurements if m.ok and _metric(m) is not None]
     print(f"run(s) {', '.join(run_ids)}: {len(measurements)} measurement(s), "
           f"{len(scored)} scored\n")

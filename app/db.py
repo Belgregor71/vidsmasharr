@@ -295,6 +295,23 @@ CREATE INDEX idx_guard_change_applied ON guard_change(applied_at DESC);
 
 
 
+# --- 8: which content class a benchmark measurement came from ---------------
+# The ladder grouped measurements by (encoder, resolution) alone, then applied
+# BOTH the movie target and the TV target to that one pooled curve. A movie run
+# and a TV run at the same resolution therefore contaminated each other: on the
+# 2026-08-28 combined run, two thin TV clips and two fat movie clips pooled to a
+# mean output of 81% of source, which slipped under the "re-encoding this makes
+# it bigger" guard that should have caught the movie half outright.
+#
+# The class was known when the clip was chosen and thrown away before it was
+# stored. Now it is kept. Rows written before this are NULL, which the ladder
+# treats as "unknown" and warns about rather than guessing.
+migration("""
+ALTER TABLE bench_result ADD COLUMN content_class TEXT;
+CREATE INDEX idx_bench_class ON bench_result(run_id, content_class);
+""")
+
+
 class Database:
     """Thread-local connections over one SQLite file in WAL mode."""
 

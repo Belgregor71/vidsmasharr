@@ -330,3 +330,114 @@ class TestRebuildFromStoredRuns:
         assert "--qp-sweep" in note
         # And it names values below the finest actually tried.
         assert "14" in note
+
+
+# ------------------------------------------------ content class separation
+
+
+def _c(clip, quality, vmaf, ratio, content_class="", encoder="hevc_vaapi",
+       height=1080):
+    """A measurement that knows which clip and which content class it is."""
+    m = _m(encoder=encoder, quality=quality, vmaf=vmaf, height=height, ratio=ratio)
+    m.clip = clip
+    m.content_class = content_class
+    return m
+
+
+class TestContentClassSeparation:
+    """A movie sweep and a TV sweep at one resolution are two populations.
+
+    Pooling them corrupts both at once, and it did. On the 2026-08-28 combined
+    run, two thin TV clips and two fat movie clips averaged to 81% of source at
+    q=20, which slipped under the "re-encoding this makes it bigger" guard that
+    should have rejected the movie half outright -- and the movie rung came out
+    at qp 19 with a quoted size of 118%, a number no file will ever produce.
+    """
+
+    def clips(self, tagged: bool):
+        out = []
+        # A thin TV source: shrinks well.
+        for quality, vmaf, ratio in ((20, 95.7, 0.40), (23, 94.3, 0.25),
+                                     (26, 92.4, 0.16), (29, 89.4, 0.11)):
+            out.append(_c("tv_clip", quality, vmaf, ratio,
+                          "tv" if tagged else ""))
+        # An already-efficient movie source: every setting inflates it.
+        for quality, vmaf, ratio in ((14, 98.1, 2.92), (17, 97.5, 1.87),
+                                     (20, 96.4, 1.17)):
+            out.append(_c("movie_clip", quality, vmaf, ratio,
+                          "movie" if tagged else ""))
+        return out
+
+    def test_pooling_invents_a_movie_rung_out_of_tv_measurements(self):
+        """The contrast is the whole point. Pooled, the movie half borrows the
+        TV half's thinness and a confident-looking rung appears for content
+        that cannot be usefully encoded at all. Separated, the same numbers say
+        so."""
+        pooled = build_ladder(self.clips(tagged=False),
+                              {"movie": 95.0, "tv": 92.0})
+        separated = build_ladder(self.clips(tagged=True),
+                                 {"movie": 95.0, "tv": 92.0})
+
+        pooled_movie = next(e for e in pooled if e.content_class == "movie")
+        assert pooled_movie.expected_size_ratio < 1.0      # looks encodable
+
+        assert not [e for e in separated if e.content_class == "movie"]
+        assert [e for e in separated if e.content_class == "unusable"]
+
+    def test_separated_the_movie_half_is_called_unusable(self):
+        entries = build_ladder(self.clips(tagged=True),
+                               {"movie": 95.0, "tv": 92.0})
+        oversized = [e.content_class for e in entries
+                     if e.expected_size_ratio > 1.0]
+        assert oversized == ["unusable"]
+        unusable = next(e for e in entries if e.content_class == "unusable")
+        assert "makes these files bigger" in unusable.note
+
+    def test_the_tv_rung_survives_untouched(self):
+        entries = build_ladder(self.clips(tagged=True),
+                               {"movie": 95.0, "tv": 92.0})
+        tv = next(e for e in entries if e.content_class == "tv")
+        assert tv.expected_size_ratio < 0.30
+
+    def test_a_group_answers_only_for_its_own_target(self):
+        entries = build_ladder(
+            [_c("tv_clip", q, v, r, "tv")
+             for q, v, r in ((20, 95.0, 0.40), (26, 92.0, 0.16))],
+            {"movie": 95.0, "tv": 92.0},
+        )
+        assert {e.content_class for e in entries} == {"tv"}
+
+    def test_untagged_measurements_still_build_but_say_so(self):
+        entries = build_ladder(self.clips(tagged=False),
+                               {"movie": 95.0, "tv": 92.0})
+        assert any("before the content class was recorded" in e.note
+                   for e in entries)
+
+
+class TestBrokenClips:
+    def test_a_clip_that_inflates_and_scores_badly_is_excluded(self):
+        """Seen for real: one of two clips from the same film scored 75-78 at
+        every setting while its output ran to 1.9x the size of the source,
+        beside a sibling scoring 93-96 on the same sweep. More bits cannot cost
+        eighteen points of VMAF -- the comparison was misaligned. Because VMAF
+        aggregates by minimum, that one clip decided the whole rung."""
+        good = [_c("good", q, v, r, "movie")
+                for q, v, r in ((14, 97.6, 2.31), (17, 96.8, 1.49),
+                                (20, 95.5, 0.92))]
+        broken = [_c("broken", q, v, r, "movie")
+                  for q, v, r in ((14, 78.2, 1.90), (17, 77.6, 1.25),
+                                  (20, 76.5, 0.77))]
+
+        entries = build_ladder(good + broken, {"movie": 95.0})
+        assert entries
+        assert "excluded 1 clip" in entries[0].note
+        assert "broken" in entries[0].note
+
+    def test_genuinely_hard_content_is_kept(self):
+        """Scoring low while genuinely shrinking the file is hard content, and
+        the ladder is supposed to be governed by it."""
+        hard = [_c("hard", q, v, r, "tv")
+                for q, v, r in ((20, 84.0, 0.55), (26, 80.0, 0.35))]
+        entries = build_ladder(hard, {"tv": 92.0})
+        assert entries
+        assert "excluded" not in entries[0].note
