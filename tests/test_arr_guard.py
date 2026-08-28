@@ -254,6 +254,112 @@ class TestPlan:
 # ------------------------------------------------------------------ coverage
 
 
+class TestSpottingOtherPeoplesHevcRules:
+    """Deciding whether someone else's format is about HEVC.
+
+    The patterns below are the real ones, copied from a live Sonarr 4.0.19 and
+    Radarr 6.3.0. The first version of this check tested whether the regex
+    *text* contained "265" or "hevc" and got BR-DISK wrong, which would have
+    sent someone to `--neutralise` on a rule that exists to stop 40GB disc rips
+    being downloaded.
+    """
+
+    BR_DISK = (
+        r"^(?!.*\b((?<!HD[._ -]|HD)DVD|BDRip|720p|MKV|XviD|WMV|d3g|(BD)?REMUX"
+        r"|^(?=.*1080p)(?=.*HEVC)|[xh][-_. ]?26[45]|German.*[DM]L"
+        r"|((?<=\d{4}).*German.*([DM]L)?)(?=.*\b(AVC|HEVC|VC[-_. ]?1|MVC"
+        r"|MPEG[-_. ]?2)\b))\b)(((?=.*\b(Blu[-_. ]?ray|BD|HD[-_. ]?DVD)\b)"
+        r"(?=.*\b(AVC|HEVC|VC[-_. ]?1|MVC|MPEG[-_. ]?2|BDMV|ISO)\b))).*"
+    )
+    X265_HD = r"[xh][ ._-]?265|\bHEVC(\b|\d)"
+
+    def fmt(self, name, pattern, *, negate=False, identifier=1):
+        return {
+            "id": identifier, "name": name,
+            "specifications": [{
+                "implementation": arr_guard.RELEASE_TITLE_SPEC,
+                "negate": negate,
+                "fields": [{"name": "value", "value": pattern}],
+            }],
+        }
+
+    def test_a_real_x265_rule_is_recognised(self):
+        assert arr_guard._hevc_verdict(self.fmt("x265 (HD)", self.X265_HD)) is True
+
+    def test_br_disk_is_not_an_hevc_rule(self):
+        """It names HEVC only inside a negative lookahead: it is about full
+        disc images and deliberately excludes HEVC."""
+        assert arr_guard._hevc_verdict(self.fmt("BR-DISK", self.BR_DISK)) is not True
+
+    def test_a_release_group_list_is_not_an_hevc_rule(self):
+        """An anime low-quality-group list matched the old text check because
+        one group's name contains those digits."""
+        groups = self.fmt("Anime LQ Groups", r"\b(Hevc-Raws)\b")
+        groups["specifications"].append({
+            "implementation": arr_guard.RELEASE_TITLE_SPEC,
+            "negate": False,
+            "fields": [{"name": "value", "value": r"\b(x265Encoders)\b"}],
+        })
+        assert arr_guard._hevc_verdict(groups) is False
+
+    def test_a_negated_spec_does_not_make_it_an_hevc_rule(self):
+        assert arr_guard._hevc_verdict(
+            self.fmt("Not x265", self.X265_HD, negate=True)
+        ) is False
+
+    def test_a_pattern_python_cannot_compile_is_unknown_not_a_guess(self):
+        """.NET allows variable-length lookbehind; Python does not. Guessing
+        "yes" is the answer that does damage."""
+        assert arr_guard._hevc_verdict(
+            self.fmt("Odd", r"(?<!HD[._ -]|HD)DVD")
+        ) is None
+
+    def test_unreadable_formats_are_reported_rather_than_dropped(self, config):
+        fake = FakeArr(formats=[self.fmt("Odd", r"(?<!HD[._ -]|HD)DVD", identifier=9)])
+        result = arr_guard.plan(client_for(fake), config.guard)
+        assert any("cannot evaluate" in note for note in result.notes)
+
+    def test_only_a_real_hevc_penalty_is_warned_about(self, config):
+        fake = FakeArr(
+            formats=[
+                self.fmt("BR-DISK", self.BR_DISK, identifier=2),
+                self.fmt("x265 (HD)", self.X265_HD, identifier=3),
+            ],
+            profiles=[{
+                "id": 1, "name": "HD-1080p",
+                "formatItems": [
+                    {"format": 2, "name": "BR-DISK", "score": -10000},
+                    {"format": 3, "name": "x265 (HD)", "score": -10000},
+                ],
+            }],
+        )
+        result = arr_guard.plan(client_for(fake), config.guard)
+        warning = " ".join(result.warnings)
+        assert "x265 (HD)" in warning
+        assert "BR-DISK" not in warning
+
+    def test_neutralise_leaves_a_non_hevc_penalty_alone(self, config):
+        """Raising BR-DISK to zero would let full disc images be downloaded."""
+        fake = FakeArr(
+            formats=[
+                self.fmt("BR-DISK", self.BR_DISK, identifier=2),
+                self.fmt("x265 (HD)", self.X265_HD, identifier=3),
+            ],
+            profiles=[{
+                "id": 1, "name": "HD-1080p",
+                "formatItems": [
+                    {"format": 2, "name": "BR-DISK", "score": -10000},
+                    {"format": 3, "name": "x265 (HD)", "score": -10000},
+                ],
+            }],
+        )
+        result = arr_guard.plan(client_for(fake), config.guard, neutralise=True)
+        profile = next(c for c in result.changes if c.kind == "qualityprofile")
+        scores = {i["name"]: i["score"] for i in profile.after["formatItems"]}
+        assert scores["BR-DISK"] == -10000
+        assert scores["x265 (HD)"] == 0
+
+
 class TestCoverage:
     def test_counts_hevc_files_the_regex_would_actually_reach(self, config):
         fake = FakeArr(files=[
@@ -268,7 +374,27 @@ class TestCoverage:
         # The second is HEVC on disk but still named x264 -- which is exactly
         # what our own re-encode produces, and the *arr scores by the name.
         assert result.coverage.matched == 1
-        assert any("will not match them" in note for note in result.notes)
+        assert any("does not say our own files are covered" in n
+                   for n in result.notes)
+
+    def test_the_predictive_number_is_measured_on_encode_candidates(self, config):
+        """Existing HEVC files are HEVC because they were downloaded that way,
+        so their names say so and the match rate looks perfect. The number that
+        predicts anything is the one taken over the H.264 files we would
+        re-encode, whose names our output inherits."""
+        fake = FakeArr(files=[
+            episode_file(scene_name="Show.S01E01.1080p.WEB-DL.x265-GRP", codec="hevc"),
+            episode_file(scene_name="Show.S01E02.1080p.WEB-DL.x264-GRP", codec="h264"),
+            episode_file(scene_name="Show.S01E03.1080p.WEB-DL.x264-GRP", codec="h264"),
+            episode_file(scene_name="Show.S01E04.1080p.HEVC.REMUX-GRP", codec="h264"),
+        ])
+        result = arr_guard.plan(client_for(fake), config.guard)
+
+        assert result.coverage.match_pct == 100.0        # reassuring, and hollow
+        assert result.coverage.candidates == 3
+        assert result.coverage.candidates_matched == 1   # only the oddly-named one
+        assert any("THE NUMBER THAT MATTERS" in n for n in result.notes)
+        assert any("2 in 3 of the files we encode" in n for n in result.notes)
 
     def test_falls_back_to_the_file_name_when_there_is_no_scene_name(self, config):
         fake = FakeArr(files=[

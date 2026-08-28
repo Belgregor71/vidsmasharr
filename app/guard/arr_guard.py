@@ -57,9 +57,28 @@ from app.identity.arr import ArrClient, ArrUnavailable
 # and hope, and a schema we do not recognise is a stop, not a warning.
 RELEASE_TITLE_SPEC = "ReleaseTitleSpecification"
 
-# Any custom format whose specifications mention these is in the same business
-# as ours, and its score matters to us whoever wrote it.
-HEVC_HINT = re.compile(r"265|hevc", re.IGNORECASE)
+# Deciding whether somebody else's custom format is about HEVC.
+#
+# The obvious test -- does its regex text contain "265" or "hevc" -- is wrong,
+# and wrong in the expensive direction. Checked against a real Sonarr it flagged
+# TRaSH's BR-DISK, whose pattern mentions HEVC only inside a *negative*
+# lookahead: it is a rule about full BluRay disc images that deliberately
+# excludes HEVC. Acting on that reading would have raised a -10000 that exists
+# to stop 40GB disc rips being downloaded. It also flagged an anime
+# release-group list, on a group whose name happens to contain those digits.
+#
+# So the test is semantic: run the pattern against a pair of release names that
+# differ only in codec. A format is about HEVC if it matches the HEVC one and
+# not the H.264 one. Group names in the probes are deliberately absurd so a
+# list of release groups cannot match by accident.
+HEVC_PROBES = (
+    "Some.Title.2020.1080p.BluRay.x265-VIDSMASHARRPROBE",
+    "Some.Title.2020.1080p.BluRay.HEVC-VIDSMASHARRPROBE",
+)
+H264_PROBES = (
+    "Some.Title.2020.1080p.BluRay.x264-VIDSMASHARRPROBE",
+    "Some.Title.2020.1080p.BluRay.AVC-VIDSMASHARRPROBE",
+)
 
 # How many series/movies to ask about when sampling files. Each is a round trip
 # on Sonarr, and a few dozen is plenty to answer "does the regex match?".
@@ -233,17 +252,38 @@ class Change:
 
 @dataclass
 class Coverage:
-    """Would the format we are about to write match the files it is for?"""
+    """Would the format we are about to write match the files it is for?
+
+    Two different questions live here, and only the second one predicts
+    anything about *our* files:
+
+    - `hevc` / `matched`: of the HEVC files already in the library, how many
+      does the format reach? This looks reassuring and largely is not. Those
+      files are HEVC because they were *downloaded* as HEVC releases, so of
+      course their names say so.
+    - `candidates` / `candidates_matched`: of the H.264 files -- the ones we
+      would re-encode -- how many carry a name the format would match anyway?
+      Our encode keeps the source name, so this is the fraction of our own
+      output that ends up protected, and it is usually close to zero.
+    """
 
     sampled: int = 0
     hevc: int = 0
     matched: int = 0
     already_scored: int = 0
+    candidates: int = 0
+    candidates_matched: int = 0
     misses: list[str] = field(default_factory=list)
 
     @property
     def match_pct(self) -> float:
         return 100.0 * self.matched / self.hevc if self.hevc else 0.0
+
+    @property
+    def candidate_match_pct(self) -> float:
+        if not self.candidates:
+            return 0.0
+        return 100.0 * self.candidates_matched / self.candidates
 
 
 @dataclass
@@ -289,8 +329,46 @@ def _spec_values(fmt: dict) -> list[str]:
     return out
 
 
+def _targets_hevc(pattern: str) -> bool | None:
+    """True, False, or None when the pattern cannot be evaluated here.
+
+    Sonarr runs these on .NET, which allows variable-length lookbehind; Python
+    does not, and TRaSH's BR-DISK pattern uses one. An unreadable pattern is
+    reported as unknown rather than guessed at in either direction -- guessing
+    "yes" is what would send someone to `--neutralise` on a format that has
+    nothing to do with us.
+    """
+    try:
+        regex = re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        return None
+    if not any(regex.search(probe) for probe in HEVC_PROBES):
+        return False
+    return not any(regex.search(probe) for probe in H264_PROBES)
+
+
+def _hevc_verdict(fmt: dict) -> bool | None:
+    """Is this format about HEVC? None if we could not tell."""
+    unreadable = False
+    for spec in fmt.get("specifications") or []:
+        # A negated spec means the format is about everything *except* this, so
+        # matching HEVC there does not make it an HEVC rule.
+        if spec.get("negate"):
+            continue
+        for field_entry in spec.get("fields") or []:
+            value = field_entry.get("value")
+            if not isinstance(value, str):
+                continue
+            verdict = _targets_hevc(value)
+            if verdict is True:
+                return True
+            if verdict is None:
+                unreadable = True
+    return None if unreadable else False
+
+
 def _looks_like_hevc_format(fmt: dict) -> bool:
-    return any(HEVC_HINT.search(value) for value in _spec_values(fmt))
+    return _hevc_verdict(fmt) is True
 
 
 def _format_matches_wanted(existing: dict, wanted: dict) -> bool:
@@ -315,15 +393,22 @@ def measure_coverage(client: ArrWriter, cfg) -> Coverage:
     coverage = Coverage()
     for entry in client.sample_files(cfg.sample_files):
         coverage.sampled += 1
+        hits = bool(pattern.search(entry.scored_name))
+
         if not entry.is_hevc:
+            # An encode candidate. Its name is what our output will inherit.
+            coverage.candidates += 1
+            if hits:
+                coverage.candidates_matched += 1
+            elif len(coverage.misses) < 5:
+                coverage.misses.append(entry.scored_name)
             continue
+
         coverage.hevc += 1
         if cfg.format_name in entry.formats:
             coverage.already_scored += 1
-        if pattern.search(entry.scored_name):
+        if hits:
             coverage.matched += 1
-        elif len(coverage.misses) < 5:
-            coverage.misses.append(entry.scored_name)
     return coverage
 
 
@@ -409,13 +494,25 @@ def plan(client: ArrWriter, cfg, *, neutralise: bool = False) -> GuardPlan:
     # Other people's HEVC formats. A negative one is not a detail: while it
     # stands, our files score below a plain H.264 release and the guard cannot
     # protect anything.
-    rivals = {
-        f["id"]: f.get("name", "?")
-        for f in formats
-        if f.get("id") is not None
-        and f.get("name") != cfg.format_name
-        and _looks_like_hevc_format(f)
-    }
+    rivals: dict[int, str] = {}
+    unreadable: list[str] = []
+    for entry in formats:
+        if entry.get("id") is None or entry.get("name") == cfg.format_name:
+            continue
+        verdict = _hevc_verdict(entry)
+        if verdict is True:
+            rivals[entry["id"]] = entry.get("name", "?")
+        elif verdict is None:
+            unreadable.append(entry.get("name", "?"))
+
+    if unreadable:
+        result.notes.append(
+            f"{len(unreadable)} custom format(s) use regex syntax this cannot "
+            f"evaluate (.NET allows variable-length lookbehind and Python does "
+            f"not), so they were left out of the check above rather than "
+            f"guessed at: {', '.join(sorted(unreadable)[:6])}. If the guard "
+            f"turns out not to protect anything, look at those by hand."
+        )
     penalised = sorted({
         f"{rivals[item['format']]} ({item.get('score')})"
         for profile in profiles
@@ -456,27 +553,41 @@ def plan(client: ArrWriter, cfg, *, neutralise: bool = False) -> GuardPlan:
 def _coverage_notes(coverage: Coverage | None, cfg) -> list[str]:
     if coverage is None or coverage.sampled == 0:
         return ["could not sample any files, so the match rate is unknown"]
-    if coverage.hevc == 0:
-        return [
-            f"none of the {coverage.sampled} sampled file(s) are HEVC yet, which "
-            f"is expected before any encoding has run. The match rate cannot be "
-            f"measured until there are HEVC files to measure it on -- re-run "
-            f"this check after the first batch."
-        ]
 
-    notes = [
-        f"sampled {coverage.sampled} file(s): {coverage.hevc} are HEVC, and the "
-        f"format would match the release name of {coverage.matched} of those "
-        f"({coverage.match_pct:.0f}%)"
-    ]
-    if coverage.match_pct < 90:
+    notes = []
+    if coverage.hevc:
         notes.append(
-            "the rest keep a release name that does not say HEVC, so the format "
-            "will not match them and they stay unprotected. An *arr scores a "
-            "file by its release name, not by what is inside it. Fixing that "
-            "means the file naming format carrying {MediaInfo VideoCodec} and a "
-            "rename -- which rewrites library filenames, so it is your call and "
-            "not something this will do for you. Examples that would miss: "
+            f"sampled {coverage.sampled} file(s). Of the {coverage.hevc} already "
+            f"HEVC, the format matches {coverage.matched} "
+            f"({coverage.match_pct:.0f}%) -- but those are HEVC because they were "
+            f"downloaded as HEVC releases, so their names say so. That number "
+            f"says the regex works; it does not say our own files are covered."
+        )
+    else:
+        notes.append(
+            f"sampled {coverage.sampled} file(s), none of them HEVC yet, which is "
+            f"expected before any encoding has run."
+        )
+
+    if not coverage.candidates:
+        return notes
+
+    unprotected = coverage.candidates - coverage.candidates_matched
+    notes.append(
+        f"THE NUMBER THAT MATTERS: our encode keeps the source file name, and an "
+        f"*arr scores a file by that name rather than by what is inside it. Of "
+        f"the {coverage.candidates} H.264 file(s) sampled -- the ones we would "
+        f"re-encode -- {coverage.candidates_matched} carry a name this format "
+        f"would match ({coverage.candidate_match_pct:.0f}%). So roughly "
+        f"{unprotected} in {coverage.candidates} of the files we encode would be "
+        f"left unprotected by this format alone."
+    )
+    if unprotected:
+        notes.append(
+            "closing that gap means putting {MediaInfo VideoCodec} in the *arr "
+            "file naming format and renaming, which rewrites library filenames "
+            "Plex has already indexed -- a deliberate choice, and not one this "
+            "will make for you. Names that would miss: "
             + ", ".join(coverage.misses)
         )
     return notes

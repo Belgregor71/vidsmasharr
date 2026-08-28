@@ -53,7 +53,9 @@ number decides whether the guard is worth applying at all:
 sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app arr-guard
 ```
 
-Two things in that output need a human:
+This has now been run once (2026-08-28, read-only) -- see session 4 for what
+it found, including the reason the guard would currently protect none of our
+own files. Two things in that output need a human:
 
 - **The match rate.** An *arr scores a file by its *release name*, and our
   re-encode keeps the original name, which usually says `x264`. The guard
@@ -225,16 +227,75 @@ with fewer than 20 known files. Neither can happen on the real library --
 of megabytes -- but it is worth knowing that a file which shrinks below 50 MB
 would lose its identity on the next walk.
 
+### The guard has now met the real Sonarr and Radarr (read-only)
+
+Run from the workstation over the LAN, no `--apply`. Sonarr 4.0.19.2979 and
+Radarr 6.3.0.10514, both reachable, both offering `ReleaseTitleSpecification`.
+This answered the open question and turned up a bug that would have done real
+damage.
+
+**The detector for other people's HEVC formats was too loose, and its false
+positive was dangerous.** It tested whether a format's regex *text* contained
+"265" or "hevc", and on the real Sonarr that flagged TRaSH's **BR-DISK** at
+-10000. BR-DISK names HEVC only inside a *negative lookahead*: it is a rule
+about full BluRay disc images that deliberately excludes HEVC. `--neutralise`
+would have raised it to zero and let both apps start grabbing 40GB disc rips.
+It also flagged an anime release-group list, on a group whose name contains
+those digits.
+
+The test is now semantic: run the pattern against two release names differing
+only in codec, and call it an HEVC rule if it matches the HEVC one and not the
+H.264 one. Patterns Python cannot compile -- .NET allows variable-length
+lookbehind and BR-DISK uses one -- are reported as "could not evaluate" rather
+than guessed at in either direction. Guessing "yes" is the answer that does
+damage. The real BR-DISK and x265 (HD) patterns are in the tests.
+
+**The one genuine conflict: Radarr scores `x265 (HD)` at -10000.** Its pattern
+is `[xh][ ._-]?265|\bHEVC(\b|\d)` with a negated 2160p resolution spec, so it
+penalises HEVC at everything below 4K -- most of the film library. While that
+stands, nothing the guard adds protects a film. Sonarr has no such format.
+
+**Coverage: 100%, and the 100% was meaningless.** Of 14 HEVC files sampled in
+Sonarr the format matched 14. But those files are HEVC because they were
+*downloaded* as HEVC releases, so of course their names say so. The number that
+predicts anything is taken over the H.264 files -- the ones we would re-encode,
+whose names our output inherits -- and that came back **0 of 186 in Sonarr and
+0 of 197 in Radarr**. The guard as it stands would protect essentially none of
+our own work. The report now leads with that figure instead.
+
+### ...and the fix is much cheaper than expected
+
+The reason is not that the naming format lacks the codec. Read from the live
+instances:
+
+- Sonarr `standardEpisodeFormat` ends with `{[MediaInfo VideoCodec]}`, and so
+  do the daily and anime formats. Radarr's `standardMovieFormat` ends with
+  `[{Mediainfo VideoCodec}]`.
+- `renameEpisodes` and `renameMovies` are both **already true**.
+- **0 of 200 Sonarr files and 199 of 200 Radarr files have no `sceneName`**, so
+  scoring falls back to the file name -- which is the one carrying the codec.
+
+So every filename already ends in `[x264]`, `[XviD]` or `[x265]`, and the
+existing HEVC files render as `[x265]` (x265-encoded) or `[HEVC]` (codec
+`h265`, which is what our hardware VAAPI encode will produce). The guard's own
+regex matches all three spellings.
+
+**The missing link is therefore a rescan, not a rename scheme.** After we
+replace a file, the *arr still believes it is x264 until it re-reads the
+file's media info; once it does, its own renaming turns `[x264]` into `[HEVC]`
+and the custom format matches. Nothing in the project triggers that today.
+
+That is the next thing worth building, and it is deliberately not built yet:
+it writes to the *arrs (`POST /command`) and it renames files in the library
+that Plex has already indexed. Both are the user's call.
+
 ### What Phase 4 has not met
 
-The guard has never talked to the real Sonarr or Radarr. Its tests drive a fake
-one over httpx's `MockTransport`, so the request shapes are right by
-construction, but two things can only be settled against the live instances:
-whether `/customformat/schema` offers `ReleaseTitleSpecification` on those
-versions (the guard stops rather than guessing if it does not), and what the
-real match rate is. Both are printed by the dry run.
+The guard has never *written* to the real Sonarr or Radarr -- the run above was
+read-only, and `--apply` has not been used. Nothing in `guard_change` yet.
 
-Calibration has nothing to calibrate against until `app work` has really run.
+Calibration has run against genuinely produced outcome rows on the workstation,
+never against NAS hardware, so its factors mean nothing for the DS1019+ yet.
 
 ---
 
