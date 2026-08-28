@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Library &middot; vidsmasharr{% endblock %}
+
+{% block content %}
+<h1>Library</h1>
+
+<form class="toolbar" method="get" action="/library">
+  <input type="search" name="q" value="{{ q }}" placeholder="path contains...">
+  <select name="codec">
+    <option value="">any codec</option>
+    {% for option in codec_options %}
+      <option value="{{ option }}" {{ 'selected' if option == codec }}>{{ option }}</option>
+    {% endfor %}
+  </select>
+  <select name="tier">
+    <option value="">any resolution</option>
+    {% for option in ['2160p', '1080p', '720p', 'sd'] %}
+      <option value="{{ option }}" {{ 'selected' if option == tier }}>{{ option }}</option>
+    {% endfor %}
+  </select>
+  <select name="hdr">
+    <option value="">any range</option>
+    <option value="sdr" {{ 'selected' if hdr == 'sdr' }}>SDR only</option>
+    <option value="protected" {{ 'selected' if hdr == 'protected' }}>Protected (HDR/10-bit)</option>
+  </select>
+  <select name="sort">
+    <option value="size" {{ 'selected' if sort == 'size' }}>largest first</option>
+    <option value="bitrate" {{ 'selected' if sort == 'bitrate' }}>highest bitrate</option>
+    <option value="path" {{ 'selected' if sort == 'path' }}>path</option>
+  </select>
+  <button type="submit">Filter</button>
+  <span class="summary">{{ total }} file(s)</span>
+</form>
+
+<table class="library">
+  <thead>
+    <tr>
+      <th>Title</th><th>File</th><th>Video</th>
+      <th class="n">Runtime</th><th class="n">Size</th><th>Identified by</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    <tr>
+      <td>
+        {% if row.title_name %}
+          {{ row.title_name }}
+          {% if row.season is not none %}
+            <span class="ep">S{{ '%02d' % row.season }}E{{ '%02d' % (row.episode or 0) }}</span>
+          {% endif %}
+        {% else %}
+          <span class="muted">unidentified</span>
+        {% endif %}
+      </td>
+      <td class="path" title="{{ row.path }}">{{ row.path.rsplit('/', 1)[-1] }}</td>
+      <td>
+        <code>{{ row.v_codec or '?' }}</code>
+        {{ row.v_width or '?' }}&times;{{ row.v_height or '?' }}
+        {% if row.hdr_type and row.hdr_type != 'sdr' %}
+          <span class="tag hdr" title="Never re-encoded: the hardware encoder is 8-bit only">{{ row.hdr_type }}</span>
+        {% endif %}
+      </td>
+      <td class="n">{{ row.duration_s | duration }}</td>
+      <td class="n">{{ row.size_bytes | bytes }}</td>
+      <td>
+        {% if row.resolved_by %}
+          <span class="tag src-{{ row.resolved_by }}">{{ row.resolved_by }}</span>
+          {% if row.confidence and row.confidence < 1.0 %}
+            <span class="muted">{{ (row.confidence * 100) | round(0) | int }}%</span>
+          {% endif %}
+        {% else %}
+          <span class="muted">-</span>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if pages > 1 %}
+<nav class="pager">
+  {% set base = '/library?q=' ~ q ~ '&codec=' ~ codec ~ '&tier=' ~ tier ~ '&hdr=' ~ hdr ~ '&sort=' ~ sort %}
+  {% if page > 1 %}<a href="{{ base }}&page={{ page - 1 }}">&larr; Previous</a>{% endif %}
+  <span>Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}<a href="{{ base }}&page={{ page + 1 }}">Next &rarr;</a>{% endif %}
+</nav>
+{% endif %}
+{% endblock %}

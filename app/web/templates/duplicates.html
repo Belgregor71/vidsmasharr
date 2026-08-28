@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Duplicates &middot; vidsmasharr{% endblock %}
+
+{% block content %}
+<h1>Duplicates</h1>
+<p class="note">
+  This is a report. Nothing here deletes, moves or queues a file &mdash; choosing a
+  keeper only records your decision so the next rebuild leaves the group alone.
+</p>
+
+<div class="toolbar">
+  <span class="summary">{{ total }} group(s) &middot; {{ reclaimable | bytes }} reclaimable</span>
+  <span class="filters">
+    <a href="/duplicates?only=all" class="{{ 'on' if only == 'all' }}">All</a>
+    <a href="/duplicates?only=clear" class="{{ 'on' if only == 'clear' }}">Clear-cut</a>
+    <a href="/duplicates?only=needs_human" class="{{ 'on' if only == 'needs_human' }}">Needs a human</a>
+  </span>
+</div>
+
+{% if not groups %}
+  <div class="empty"><p>No duplicate groups. Run <code>app duplicates</code> after a scan.</p></div>
+{% endif %}
+
+{% for group in groups %}
+<article class="group{{ ' flagged' if group.needs_human }}">
+  <header>
+    <h3>
+      {{ group.name }}
+      {% if group.season is not none %}
+        <span class="ep">S{{ '%02d' % group.season }}E{{ '%02d' % (group.episode or 0) }}</span>
+      {% endif %}
+    </h3>
+    <span class="reclaim">{{ group.reclaimable_bytes | bytes }}</span>
+  </header>
+
+  <p class="reason{{ ' warn' if group.needs_human }}">
+    {% if group.needs_human %}<strong>Needs a human:</strong> {% endif %}{{ group.reason }}
+  </p>
+
+  <table class="members">
+    <thead>
+      <tr><th></th><th>File</th><th>Video</th><th class="n">Runtime</th><th class="n">Size</th><th></th></tr>
+    </thead>
+    <tbody>
+    {% for member in members[group.id] %}
+      <tr class="{{ 'keeper' if member.id == group.keeper_file_id }}">
+        <td class="mark">{{ 'KEEP' if member.id == group.keeper_file_id else '' }}</td>
+        <td class="path" title="{{ member.path }}">{{ member.path }}</td>
+        <td>
+          <code>{{ member.v_codec or '?' }}</code>
+          {{ member.v_width or '?' }}&times;{{ member.v_height or '?' }}
+          {% if member.hdr_type and member.hdr_type != 'sdr' %}
+            <span class="tag hdr">{{ member.hdr_type }}</span>
+          {% endif %}
+        </td>
+        <td class="n">{{ member.duration_s | duration }}</td>
+        <td class="n">{{ member.size_bytes | bytes }}</td>
+        <td class="act">
+          {% if member.id != group.keeper_file_id %}
+          <form method="post" action="/duplicates/{{ group.id }}/keeper">
+            <input type="hidden" name="file_id" value="{{ member.id }}">
+            <button type="submit">Keep this one</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <footer>
+    <form method="post" action="/duplicates/{{ group.id }}/dismiss">
+      <button type="submit" class="ghost">Not a duplicate &mdash; dismiss</button>
+    </form>
+  </footer>
+</article>
+{% endfor %}
+
+{% if pages > 1 %}
+<nav class="pager">
+  {% if page > 1 %}<a href="/duplicates?only={{ only }}&page={{ page - 1 }}">&larr; Previous</a>{% endif %}
+  <span>Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}<a href="/duplicates?only={{ only }}&page={{ page + 1 }}">Next &rarr;</a>{% endif %}
+</nav>
+{% endif %}
+{% endblock %}

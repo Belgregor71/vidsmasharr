@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Overview &middot; vidsmasharr{% endblock %}
+
+{% block content %}
+<h1>Overview</h1>
+
+{% if files == 0 %}
+  <div class="empty">
+    <p>No files indexed yet. Run the scanner:</p>
+    <pre>docker compose -f docker/docker-compose.yml run --rm vidsmasharr app phase1</pre>
+  </div>
+{% else %}
+
+<section class="tiles">
+  <div class="tile">
+    <span class="k">{{ files }}</span>
+    <span class="l">files indexed</span>
+    <span class="s">{{ probed }} probed</span>
+  </div>
+  <div class="tile">
+    <span class="k">{{ total_bytes | bytes }}</span>
+    <span class="l">library size</span>
+  </div>
+  <div class="tile{{ ' warn' if dupes.n }}">
+    <span class="k">{{ dupes.b | bytes }}</span>
+    <span class="l">reclaimable from duplicates</span>
+    <span class="s">{{ dupes.n }} groups, {{ dupes.h }} need a human</span>
+  </div>
+  <div class="tile">
+    <span class="k">{{ titles }}</span>
+    <span class="l">titles</span>
+    <span class="s">{{ unresolved }} files unidentified</span>
+  </div>
+</section>
+
+{% if missing %}
+<p class="note">{{ missing }} file(s) previously seen are missing from disk. Rows are
+kept rather than deleted so history and outcomes still resolve.</p>
+{% endif %}
+
+<div class="cols">
+  <section>
+    <h2>Codec mix</h2>
+    <table>
+      <thead><tr><th>Codec</th><th class="n">Files</th><th class="n">Size</th><th class="n">Share</th></tr></thead>
+      <tbody>
+      {% for row in codecs %}
+        <tr>
+          <td><code>{{ row.v_codec }}</code></td>
+          <td class="n">{{ row.n }}</td>
+          <td class="n">{{ row.b | bytes }}</td>
+          <td class="n">
+            <div class="bar"><span style="width: {{ (100.0 * row.b / total_bytes) | round(1) }}%"></span></div>
+            {{ (100.0 * row.b / total_bytes) | round(1) }}%
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Resolution</h2>
+    <table>
+      <thead><tr><th>Tier</th><th class="n">Files</th><th class="n">Size</th></tr></thead>
+      <tbody>
+      {% for row in tiers %}
+        <tr>
+          <td>{{ row.tier }}</td>
+          <td class="n">{{ row.n }}</td>
+          <td class="n">{{ row.b | bytes }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+{% endif %}
+{% endblock %}

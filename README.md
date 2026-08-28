@@ -34,18 +34,18 @@ costs some savings on one file; a false negative destroys it.
 
 ## Status
 
-**Phase 0 (calibration) — complete.** Phases 1–4 are not built yet.
+**Phases 0 and 1 are complete.** Phases 2–4 are not built yet.
 
 | Phase | What | State |
 |---|---|---|
 | 0 | Capability detection, benchmark, quality ladder | Done |
-| 1 | Scan, identify via Plex/*arr, duplicate report + UI | Not started |
+| 1 | Scan, identify via Plex/*arr, duplicate report + UI | Done |
 | 2 | Decision engine, planner, dry-run plan | Not started |
 | 3 | Encode pipeline, verification, atomic swap, scheduler | Not started |
 | 4 | *arr profile guard, estimator calibration, x265 keepers | Not started |
 
-Nothing in the current code modifies your media library. Phase 0 only reads
-files and writes to a scratch directory.
+Nothing in the current code modifies your media library. Phases 0 and 1 only
+read files, and write to a scratch directory and the SQLite database.
 
 ## Phase 0: run this first
 
@@ -117,6 +117,44 @@ whole plan backfires.
 If either TV transcodes, revisit the codec choice here — before encoding
 thousands of files.
 
+## Phase 1: index the library
+
+Phase 1 answers *what have you actually got, and what have you got twice?* It
+reads; it never writes to your media.
+
+```sh
+docker compose -f docker/docker-compose.yml run --rm vidsmasharr app phase1
+```
+
+That runs three steps, each also available on its own:
+
+| Step | Command | What it does |
+|---|---|---|
+| Scan | `app scan` | Walks the libraries, then ffprobes anything new or changed |
+| Identify | `app identify` | Resolves files to titles via Plex, then Sonarr/Radarr, then filenames |
+| Duplicates | `app duplicates` | Groups copies of the same thing and ranks which to keep |
+
+`app status` prints what the database currently knows. The web UI is on
+**http://<nas>:8330** once the container is up.
+
+### Notes that matter
+
+- **The first scan is the slow one.** Probing is largest-file-first, so an
+  interrupted scan is still useful; `--probe-limit N` caps a run. Rescans only
+  probe files whose size or mtime moved.
+- **A library that walks up empty is treated as a mount failure, not a
+  deletion.** If a root loses more than half its known files the scanner
+  refuses to mark anything missing and tells you why. Nothing is ever deleted
+  from the database either — files that disappear are flagged `missing`.
+- **Identity confidence is recorded.** Plex resolves at 1.0, the *arrs at 0.95,
+  filenames below that. The UI shows which source matched each file.
+- **The duplicate report is report-only**, by design. Choosing a keeper or
+  dismissing a group records *your* decision and survives future rebuilds; it
+  does not move, delete or queue anything.
+- **Ambiguous groups are flagged rather than ranked.** Copies whose runtimes
+  differ (likely different cuts), HDR-versus-resolution trade-offs, and copies
+  too similar to separate are all marked *needs a human*.
+
 ## Safety model
 
 Enforced across the project, and the parts that exist already respect it:
@@ -154,10 +192,18 @@ python -m bench --libraries /path/to/media --allow-software-only \
 
 ```
 app/
+  cli.py               `app scan|identify|duplicates|phase1|status|serve`
   config.py            YAML + env config, safe defaults
   db.py                SQLite schema and migrations
   scan/probe.py        ffprobe -> normalised facts, HDR detection
   scan/walker.py       library traversal, sampling
+  scan/index.py        incremental sync: disk -> rows -> probe facts
+  identity/plex.py     the Plex library DB (snapshotted, never opened live)
+  identity/arr.py      Sonarr / Radarr read-only clients
+  identity/filename.py fallback parsing, always below full confidence
+  identity/resolve.py  merge the sources into title / file_title
+  dedupe/groups.py     duplicate grouping and keeper ranking (report only)
+  web/                 FastAPI + Jinja2 UI: overview, duplicates, library
   work/ffmpeg_cmd.py   encode + VMAF command construction
 bench/
   capability.py        what this box can actually do

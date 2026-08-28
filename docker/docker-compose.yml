@@ -60,7 +60,12 @@ services:
     mem_limit: 1g
     restart: unless-stopped
 
-    # Phase 0: run the benchmark instead of the (not yet built) web service.
+    # Default: serve the web UI on :8330 (Overview, Duplicates, Library).
+    #
+    # One-off runs override this and do not disturb a running container:
     #   docker compose run --rm vidsmasharr bench.capability
     #   docker compose run --rm vidsmasharr bench --libraries /media/tv
-    command: ["bench.capability"]
+    #   docker compose run --rm vidsmasharr app phase1
+    #   docker compose run --rm vidsmasharr app scan --probe-limit 500
+    #   docker compose run --rm vidsmasharr app status
+    command: ["app", "serve"]

@@ -22,7 +22,7 @@ decides everything.
 
 - Repo: https://github.com/Belgregor71/vidsmasharr (public)
 - 5 commits, `main`, local and remote in sync
-- 44 tests passing, ~2,700 lines
+- 116 tests passing (Phase 1 added 72)
 - Nothing has touched the media library. Phase 0 only reads and writes scratch.
 
 ## Container status: VERIFIED WORKING (2026-08-28)
@@ -201,19 +201,51 @@ disagreement is "protected". A test covers exactly this case. **Do not
 app/config.py          YAML + env config. Safe defaults: dry_run=true,
                        delete_original_on_success=false
 app/db.py              SQLite schema, 5 migrations, WAL
+app/cli.py             app scan|identify|duplicates|phase1|status|serve
 app/scan/probe.py      ffprobe -> normalised facts + HDR detection  [CRITICAL]
 app/scan/walker.py     library traversal, skip-dirs, reservoir sampling
+app/scan/index.py      incremental sync + probe queue, unmounted-share guard
+app/identity/plex.py   Plex library DB, snapshotted before reading
+app/identity/arr.py    Sonarr/Radarr read-only clients
+app/identity/filename.py  fallback parsing, never full confidence
+app/identity/resolve.py   merges sources; prevents title splitting
+app/dedupe/groups.py   duplicate grouping + keeper ranking (report only)
+app/web/               FastAPI + Jinja2 UI on :8330
 app/work/ffmpeg_cmd.py encode + VMAF command construction
 bench/capability.py    verifies encoders by real 1-second encodes
 bench/runner.py        clip extraction, encode matrix, VMAF, decode-mode probe
 bench/ladder.py        interpolates settings hitting VMAF targets -> profiles.yaml
 bench/__main__.py      the 5-step Phase 0 run
 docker/                two-ffmpeg image + DSM compose
-tests/                 44 tests: HDR detection, ladder interpolation, commands
+tests/                 116 tests
 ```
 
-Phases 1–4 (scan/dedupe, planner, encode pipeline, *arr guard) are **not
-started**. See `README.md` for the phase table.
+**Phase 1 is built** (2026-08-28) and runs end to end on synthetic data, but
+has **not yet been run against the real library** -- that needs the NAS.
+Phases 2-4 (planner, encode pipeline, *arr guard) are not started. See
+`README.md` for the phase table.
+
+### Phase 1 decisions worth not re-litigating
+
+- **A library root that walks up empty is a mount failure, not a deletion.**
+  If a root loses >50% of its known files the scanner refuses to mark anything
+  missing and says so. Given the `/volume1/Media` decoy, this guard is not
+  theoretical.
+- **Files are never deleted from the database**, only flagged `missing`, so
+  outcomes and history keep resolving.
+- **Title splitting was the real risk in identity.** If Plex names a show and
+  the filename parser names the same show for a file Plex has not scanned,
+  two titles appear and the duplicate between them -- the one most worth
+  finding -- is never found. A weak source therefore attaches to an existing
+  title when the name matches *unambiguously*, and invents a new title when it
+  cannot. Two "The Office" rows with no year to separate them is exactly the
+  case where guessing wrong tells a user to delete the wrong file.
+- **The keeper is the best *source*, not the smallest file.** A 4K HDR copy
+  wins its group even though it is the biggest, because Phase 3 can shrink a
+  keeper later and nothing can un-shrink a copy already thrown away.
+- **Ambiguity is flagged, not resolved.** Differing runtimes (probably
+  different cuts), HDR-vs-resolution trade-offs, and copies too close to rank
+  are all marked *needs a human*.
 
 ---
 
@@ -237,7 +269,15 @@ started**. See `README.md` for the phase table.
 4. **Verify direct play** — encode 2-3 real files at the ladder settings, play
    one on each TV, confirm Plex says "Direct Play" not "Transcode". Do not skip
    this; if either TV transcodes the codec choice must change.
-5. **Phase 1** — scan, identify via Plex/*arr, duplicate report + UI.
+5. ~~**Phase 1** — scan, identify, duplicate report + UI.~~ **Built
+   2026-08-28.** Not yet run on the real library. First real run:
+   ```sh
+   sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app phase1
+   ```
+   Expect the first scan to take a while -- it ffprobes every file once. It is
+   largest-first and resumable, and `--probe-limit N` caps a run. Needs the
+   Plex token and *arr API keys in `config/config.yaml` to resolve identity
+   from anything better than filenames.
 
 ### A design consequence the census forces
 
