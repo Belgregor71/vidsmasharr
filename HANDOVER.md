@@ -35,6 +35,68 @@ decision to make rather than a run to repeat: either go lower (`--qp-sweep 10
 the sweep floor pass as calibrated -- its size ratio is not a measurement. See
 the open question at the bottom of this file.
 
+### 1b. The ladder as it now stands (2026-08-29)
+
+Rebuilt from the one surviving run, labelled TV. No warnings -- every rung is
+bracketed by real measurements:
+
+| encoder | class | res | target | setting | size | fps |
+|---|---|---|---|---|---|---|
+| hevc_vaapi | tv | 1080p | 92 | qp=26 | **15%** | 37.5 |
+| hevc_vaapi | tv | 720p | 92 | qp=24 | 33% | 38.8 |
+| hevc_vaapi | tv | sd | 92 | qp=24 | 50% | 168.5 |
+| hevc_qsv | tv | 1080p | 92 | gq=22 | 26% | 27.9 |
+| hevc_qsv | tv | 720p | 92 | gq=22 | 54% | 29.4 |
+| hevc_qsv | tv | sd | 92 | gq=23 | 56% | 116.4 |
+
+**vaapi beats qsv everywhere**, on both size and speed, which settles the
+encoder question again with cleaner numbers. 37.5 fps is about 29 minutes for a
+45-minute episode.
+
+**There are no movie rungs, and that is correct.** `app plan` will skip films
+with "no calibrated setting for movie at 1080p" rather than queue them against
+a fabricated ratio. Films wait for a real movie calibration.
+
+**The 1080p TV rung is calibrated on two clips from ONE show.** Skeleton Crew
+is a clean modern Disney+ WEB-DL; 85% reduction is believable for that and will
+not generalise to grain-heavy older TV or to animation, and the library has a
+lot of both. The danger is not bad files -- verification fails closed and
+rejects anything under VMAF 89 -- it is **wasted CPU**, which is the one
+resource the whole project rations. Broaden it before bulk encoding:
+
+```sh
+sudo nohup docker compose -f docker/docker-compose.yml run --rm -T vidsmasharr bench --libraries /media/tv --content-class tv --sources 6 --keep-clips > /volume1/scratch/vidsmasharr/bench-tv2.log 2>&1 &
+```
+
+New runs tag their own content class, so only the old run still needs
+`--run-class 9ece8030435f=tv` when combining.
+
+Also noted, not acted on: at 720p the two Alex Rider clips disagree on *size*
+by 5x (12.9% vs 62.1% at the same setting). VMAF disagreement is warned about;
+size disagreement is not. The 33% is an average of two very different scenes,
+so 720p savings estimates are softer than the 1080p ones.
+
+### 1c. The movie run's measurements were lost, and it does not matter much
+
+`bench.ladder --list-runs` on 2026-08-29 found **one** run, 60 measurements,
+six TV clips. The movie run's 24 measurements (Swapped x2, Pitch_Black x2, at
+three quality points across two encoders) were present in a ladder built an
+hour earlier and were gone afterwards.
+
+Most likely cause: the rebuild one-liner in this file does
+`cp -a vidsmasharr/config /volume1/scratch/vidsmasharr-config.bak`, and **if
+that backup directory already exists, `cp -a` copies *into* it** rather than
+over it. The restore step then pulls the older backup back out. Anyone using
+that command should delete the backup directory first, or use a dated name.
+Better: the NAS now has Git, so the tarball-and-rm-rf path is retired --
+see below.
+
+The loss costs almost nothing. Both movie clips were already established as
+invalid: `Swapped (2026)` is a modern Netflix WEB-DL that inflates at every
+setting, and `Pitch_Black` clip 1 was a broken comparison. Recovering them
+would only let the ladder print "movie: unusable" from real rows instead of
+from absence.
+
 ### 2. Verify direct play on both TVs
 
 Still the cheapest check with the largest consequence, and still unverified.
@@ -945,9 +1007,20 @@ refinements worth building into Phase 2:
 
 ## Open questions for the user
 
-- **Install Git on the NAS?** Recommended. Four more phases of iteration ahead,
-  and once `config.yaml` holds real credentials, the curl+tarball update path
-  destroys it every time.
+- ~~**Install Git on the NAS?**~~ **Done 2026-08-29.** Git Server from Package
+  Center, then the existing tree was converted in place with `git init` + a
+  remote + `git reset --hard origin/main`. `reset --hard` never touches
+  untracked or ignored files, so `config/vidsmasharr.db`, `config.yaml` and
+  `profiles.yaml` survived without being moved. Updating is now one line and it
+  no longer eats the config:
+
+  ```sh
+  cd /volume1/docker/vidsmasharr && sudo git pull && sudo docker compose -f docker/docker-compose.yml build
+  ```
+
+  **The rm -rf rebuild command earlier in this file is retired.** It is kept
+  only for rebuilding from nothing, and its `cp -a` backup step has the
+  copy-into-an-existing-directory trap described above.
 - **Plex token, Sonarr URL/key, Radarr URL/key** — needed for Phase 1 identity
   resolution. Not yet gathered. They go in `config/config.yaml`, which is
   **gitignored** — never in `config.example.yaml`.
