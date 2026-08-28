@@ -265,3 +265,68 @@ class TestProjection:
             average_minutes_per_file=45.0,
         )
         assert "error" in projection
+
+
+class TestRebuildFromStoredRuns:
+    """Re-running the benchmark costs a night; rebuilding costs seconds."""
+
+    def _db(self, tmp_path):
+        from app.db import Database
+
+        return Database(tmp_path / "bench.db")
+
+    def _store(self, db, run_id, *, quality_values, vmaf=94.0, resolution=1080):
+        import time
+
+        for quality in quality_values:
+            db.execute(
+                "INSERT INTO bench_result (run_id, clip, encoder, quality_key, "
+                "quality_value, src_width, src_height, out_height, frames, "
+                "wall_seconds, cpu_seconds, fps, in_bytes, out_bytes, size_ratio, "
+                "vmaf_mean, ok, created_at) "
+                "VALUES (?,?,'hevc_vaapi','qp',?,1920,?,?,720,20,20,35,100,40,0.4,?,1,?)",
+                (run_id, f"{run_id}_clip", quality, resolution, resolution, vmaf,
+                 time.time()),
+            )
+
+    def test_a_targeted_re_run_can_add_to_the_ladder_not_replace_it(self, tmp_path):
+        """A movies-only re-run must not drop last night's TV rungs."""
+        db = self._db(tmp_path)
+        self._store(db, "night_one", quality_values=[20, 23, 26])
+        self._store(db, "movies_only", quality_values=[14, 17])
+
+        combined = ladder.load_measurements(db, ["night_one", "movies_only"])
+        assert len(combined) == 5
+        assert {m.clip for m in combined} == {"night_one_clip", "movies_only_clip"}
+
+    def test_the_default_is_the_most_recent_run(self, tmp_path):
+        db = self._db(tmp_path)
+        self._store(db, "older", quality_values=[20])
+        self._store(db, "newer", quality_values=[20])
+        assert ladder.latest_run_id(db) == "newer"
+
+    def test_runs_come_back_oldest_first(self, tmp_path):
+        db = self._db(tmp_path)
+        self._store(db, "older", quality_values=[20])
+        self._store(db, "newer", quality_values=[20])
+        assert ladder.all_run_ids(db) == ["older", "newer"]
+
+    def test_an_unreachable_target_says_how_to_fix_it(self):
+        from bench.runner import Measurement
+
+        # Nothing reaches VMAF 95, exactly like the 2026-08-28 run.
+        out = []
+        for quality, vmaf in ((20, 94.9), (23, 92.6), (26, 89.0)):
+            out.append(Measurement(
+                clip="hard", encoder="hevc_vaapi", quality=quality,
+                src_width=1920, src_height=1080, out_width=None, out_height=1080,
+                frames=720, wall_seconds=20.0, cpu_seconds=20.0, fps=35.0,
+                in_bytes=100, out_bytes=40, size_ratio=0.4, src_fps=24.0,
+                vmaf_mean=vmaf,
+            ))
+        entries = ladder.build_ladder(out, {"movie": 95.0})
+        note = entries[0].note
+
+        assert "--qp-sweep" in note
+        # And it names values below the finest actually tried.
+        assert "14" in note

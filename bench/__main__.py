@@ -28,8 +28,11 @@ from app.db import Database
 from app.scan.walker import diagnose_roots, sample_files
 from bench import capability, ladder as ladder_mod, runner
 
-# Sweep points. Wide enough to bracket the VMAF targets from both sides, coarse
-# enough to finish in an evening on a Celeron.
+# Default sweep points, coarse enough to finish in an evening on a Celeron.
+# These bracket the TV target (VMAF 92) from both sides but NOT the movie one
+# (95): the first real run found the hardest clip topping out at 94.9 even at
+# qp 20, which pins every movie rung to the finest setting tried and produces
+# ratios barely worth encoding. Widen with --qp-sweep when calibrating movies.
 QP_SWEEP = [20, 23, 26, 29, 32]
 CRF_SWEEP = [19, 22, 25, 28]
 
@@ -164,7 +167,7 @@ def run(args: argparse.Namespace) -> int:
                 continue
             if encoder == "h264_vaapi" and not args.include_h264:
                 continue
-            sweep = CRF_SWEEP if encoder.startswith("lib") else QP_SWEEP
+            sweep = args.crf_sweep if encoder.startswith("lib") else args.qp_sweep
             if encoder.startswith("lib") and not args.include_software:
                 continue
             for quality in sweep:
@@ -327,6 +330,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--clips-per-source", type=int, default=2)
     parser.add_argument("--clip-seconds", type=int, default=30)
     parser.add_argument("--content-class", default="tv", choices=["tv", "movie"])
+    parser.add_argument("--qp-sweep", nargs="+", type=float, default=QP_SWEEP,
+                        metavar="QP",
+                        help="hardware quality values to sweep. Lower is better "
+                             "quality; go lower than the default 20 if a run "
+                             "reports it never reached the movie target")
+    parser.add_argument("--crf-sweep", nargs="+", type=float, default=CRF_SWEEP,
+                        metavar="CRF", help="software quality values to sweep")
     parser.add_argument("--seed", type=int, default=1019)
     parser.add_argument("--reuse-clips", action="store_true")
     parser.add_argument("--keep-clips", action="store_true")

@@ -466,6 +466,27 @@ counts actual files instead of assuming an average.
   now travels: the planner records it on each decision and the worker builds
   the command with it, instead of assuming.
 
+### The sweep floor is too high for the movie target
+
+The rebuilt ladder exposed the next problem. **Five of the six groups report
+that no tested setting reached VMAF 95** -- the hardest clip topped out at 94.9
+even at qp 20, the finest value swept. Every movie rung is therefore pinned to
+the sweep floor, and its size ratio is whatever that setting happened to give
+rather than a calibrated one. It shows: movie 720p came back at 68% of source
+and movie SD at 87%, which is not worth encoding at all.
+
+The TV rungs (target 92) are properly bracketed and trustworthy. TV is the bulk
+of the library, so this does not block progress -- it blocks *movies*.
+
+`QP_SWEEP` is now `--qp-sweep`, so fixing it does not need a code edit. A
+targeted movie run is far cheaper than the original night: two sources, three
+quality points, movies only.
+
+**Combine runs rather than replacing them.** `bench` writes profiles.yaml from
+the run it just did, so a movies-only run on its own would drop every TV rung
+measured on 2026-08-28. `bench.ladder --run-id A B` builds one ladder from
+several runs, which is the point of storing every measurement.
+
 ### Still outstanding, and the run says so itself
 
 **Direct play has not been verified on either TV.** Encode 2-3 real files at

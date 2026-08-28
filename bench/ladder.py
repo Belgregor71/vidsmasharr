@@ -257,9 +257,14 @@ def build_ladder(
             if extrapolated:
                 achieved = max(v for _, v in quality_vmaf)
                 if achieved < target:
+                    finest = min(q for q, _ in quality_vmaf)
                     extra = (
                         f"no tested setting reached VMAF {target}; best was "
-                        f"{achieved:.1f}. Using the highest-quality setting tried."
+                        f"{achieved:.1f} at {finest:g}, the finest tried, so that "
+                        f"is what this rung uses -- and its size ratio is "
+                        f"whatever that setting happened to give, not a "
+                        f"calibrated one. Re-run with lower values, e.g. "
+                        f"--qp-sweep {finest - 6:g} {finest - 3:g} {finest:g}."
                     )
                 else:
                     extra = (
@@ -391,19 +396,58 @@ def render_text(entries: list[LadderEntry]) -> str:
     return "\n".join(lines)
 
 
+def render_measurements(measurements: list[Measurement]) -> str:
+    """Every clip's own series, before aggregation flattens them.
+
+    The ladder tunes to the hardest clip in each group, so when a rung looks
+    surprising the first question is always "which clip drove it, and is that
+    clip representative or just unusual?". This is how you answer it.
+    """
+    lines = ["=== measurements by clip ===", ""]
+    groups: dict[tuple[str, str], list[Measurement]] = {}
+    for m in measurements:
+        groups.setdefault((m.encoder, _resolution_of(m)), []).append(m)
+
+    for (encoder, resolution), members in sorted(groups.items()):
+        lines.append(f"{encoder} @ {resolution}")
+        by_clip: dict[str, list[Measurement]] = {}
+        for m in members:
+            by_clip.setdefault(m.clip, []).append(m)
+        for clip, series in sorted(by_clip.items()):
+            lines.append(f"  {clip[:52]}")
+            for m in sorted(series, key=lambda x: x.quality):
+                vmaf = _metric(m)
+                ratio = f"{m.size_ratio * 100:5.1f}%" if m.size_ratio else "    ?"
+                lines.append(
+                    f"    q={m.quality:<5g} VMAF {vmaf:5.1f}   size {ratio}"
+                    f"   {m.fps or 0:6.1f} fps"
+                )
+        lines.append("")
+    return "\n".join(lines)
+
+
 # ------------------------------------------------------------------ rebuild
 
 
-def load_measurements(db, run_id: str) -> list[Measurement]:
+def load_measurements(db, run_ids: str | list[str]) -> list[Measurement]:
     """Rebuild Measurement objects from stored bench_result rows.
 
     Every encode is recorded, so the ladder can be re-derived whenever the
     interpolation changes without spending the hours again. `src_fps` is not
     stored, so `expected_out_bitrate` comes back empty on a rebuild -- the
     planner treats it as optional and falls back to the policy target.
+
+    Several runs can be combined. That matters because a benchmark aimed at one
+    gap -- movies at a finer quality sweep, say -- would otherwise write a
+    profiles.yaml containing only the rungs it measured, silently dropping
+    every rung from the night before.
     """
+    if isinstance(run_ids, str):
+        run_ids = [run_ids]
+    placeholders = ",".join("?" * len(run_ids))
     rows = db.query(
-        "SELECT * FROM bench_result WHERE run_id=? ORDER BY id", (run_id,)
+        f"SELECT * FROM bench_result WHERE run_id IN ({placeholders}) ORDER BY id",
+        tuple(run_ids),
     )
     return [
         Measurement(
@@ -425,6 +469,17 @@ def latest_run_id(db) -> str | None:
     return db.scalar("SELECT run_id FROM bench_result ORDER BY id DESC LIMIT 1")
 
 
+def all_run_ids(db) -> list[str]:
+    """Every stored run, oldest first."""
+    return [
+        row["run_id"]
+        for row in db.query(
+            "SELECT run_id, MIN(id) AS first FROM bench_result "
+            "GROUP BY run_id ORDER BY first"
+        )
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     """Re-derive profiles.yaml from measurements already in the database.
 
@@ -443,25 +498,52 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--config", default=None)
     parser.add_argument("--db", default=None)
-    parser.add_argument("--run-id", default=None,
-                        help="which benchmark run to use (default: the most recent)")
+    parser.add_argument("--run-id", nargs="+", default=None, metavar="RUN_ID",
+                        help="which benchmark run(s) to build from (default: the "
+                             "most recent). Pass several to combine them, which "
+                             "is how a targeted re-run adds to the ladder "
+                             "instead of replacing it")
+    parser.add_argument("--all-runs", action="store_true",
+                        help="build from every stored run")
     parser.add_argument("--out", default=None,
                         help="where to write profiles.yaml (default: the config dir)")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the ladder without writing profiles.yaml")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="show each clip's measurements before aggregating, "
+                             "which is how you tell a hard clip from a bad one")
     args = parser.parse_args(argv)
 
     config = load_config(Path(args.config) if args.config else None)
     db = Database(Path(args.db) if args.db else config.db_path)
 
-    run_id = args.run_id or latest_run_id(db)
-    if not run_id:
+    if args.all_runs:
+        run_ids = all_run_ids(db)
+    elif args.run_id:
+        run_ids = args.run_id
+    else:
+        latest = latest_run_id(db)
+        run_ids = [latest] if latest else []
+
+    if not run_ids:
         print("No benchmark results stored. Run `bench` first.")
         return 2
 
-    measurements = load_measurements(db, run_id)
+    known = set(all_run_ids(db))
+    unknown = [r for r in run_ids if r not in known]
+    if unknown:
+        print(f"No such run: {', '.join(unknown)}")
+        print(f"Stored runs: {', '.join(known) or 'none'}")
+        return 2
+
+    measurements = load_measurements(db, run_ids)
     scored = [m for m in measurements if m.ok and _metric(m) is not None]
-    print(f"run {run_id}: {len(measurements)} measurement(s), {len(scored)} scored\n")
+    print(f"run(s) {', '.join(run_ids)}: {len(measurements)} measurement(s), "
+          f"{len(scored)} scored\n")
+
+    if args.verbose:
+        print(render_measurements(scored))
+        print()
 
     targets = {"movie": config.quality.movie_vmaf, "tv": config.quality.tv_vmaf}
     entries = build_ladder(measurements, targets)
@@ -498,7 +580,9 @@ def main(argv: list[str] | None = None) -> int:
                       f"{out.name}: {decode_modes}")
 
     out.write_text(
-        to_profiles_yaml(entries, preferred, decode_modes, run_id=run_id),
+        to_profiles_yaml(
+            entries, preferred, decode_modes, run_id=" ".join(run_ids)
+        ),
         encoding="utf-8",
     )
     print(f"\nWrote {out}")
