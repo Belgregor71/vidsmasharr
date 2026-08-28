@@ -6,6 +6,7 @@ The container's ENTRYPOINT is `python3 -m`, so on the NAS these read as:
     docker compose ... run --rm vidsmasharr app identify
     docker compose ... run --rm vidsmasharr app duplicates
     docker compose ... run --rm vidsmasharr app phase1     (all three, in order)
+    docker compose ... run --rm vidsmasharr app plan
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ from app.config import Config, load_config
 from app.db import Database
 from app.dedupe import groups
 from app.identity import resolve
+from app.plan import planner
+from app.plan.profiles import resolve_ladder
 from app.scan import index
 from app.scan.walker import diagnose_roots
 
@@ -122,6 +125,61 @@ def cmd_duplicates(args) -> int:
     return 0
 
 
+def cmd_plan(args) -> int:
+    config, db = _load(args)
+    _header("PLAN  decide what to do with each file, and in what order")
+
+    probed = db.scalar(
+        "SELECT COUNT(*) FROM media_file WHERE missing=0 AND probe_version IS NOT NULL"
+    ) or 0
+    if not probed:
+        print("Nothing is probed yet. Run `app scan` first.")
+        return 2
+
+    ladder = resolve_ladder(config)
+    if ladder.provisional and not args.provisional:
+        print(
+            f"No quality ladder at {config.profiles_path}.\n\n"
+            "Without it, every size and time below would be a guess from the\n"
+            "policy targets rather than a measurement from this box. Run the\n"
+            "benchmark first:\n\n"
+            "    docker compose -f docker/docker-compose.yml run --rm "
+            "vidsmasharr bench --libraries /media/tv /media/movies\n\n"
+            "Or pass --provisional to see the shape of the plan anyway. Those\n"
+            "decisions are written in a state Phase 3 will refuse to execute."
+        )
+        return 2
+
+    stats = planner.build(
+        db, config, ladder=ladder, progress=print if args.verbose else None
+    )
+    for note in stats.notes:
+        print(f"\n  ! {note}")
+    print()
+    print(stats.summary())
+
+    if stats.skip_reasons:
+        print("\n  Not queued, because:\n")
+        for reason, count in stats.skip_reasons.most_common(12):
+            print(f"    {count:>6}  {reason}")
+
+    rows = planner.top_jobs(db, args.top)
+    if rows:
+        print(f"\n  Best {len(rows)} job(s) by GB reclaimed per encode-hour:\n")
+        for row in rows:
+            hours = (row["est_cpu_seconds"] or 0) / 3600
+            # The file name, not the title: forty episodes of one show all carry
+            # the same title and the list becomes unreadable.
+            name = Path(row["path"]).name
+            print(f"    {row['priority']:6.1f} GB/h  "
+                  f"{(row['est_saved_bytes'] or 0) / GB:6.2f} GB in {hours:5.1f}h  "
+                  f"{row['action']:<9} {name[:52]}")
+            print(f"                    {row['reason']}")
+
+    print("\n  Nothing has been encoded, moved or deleted. This is a plan.")
+    return 0
+
+
 def cmd_phase1(args) -> int:
     for step in (cmd_scan, cmd_identify, cmd_duplicates):
         code = step(args)
@@ -221,6 +279,15 @@ def build_parser() -> argparse.ArgumentParser:
     phase1.add_argument("--no-filenames", action="store_true")
     phase1.add_argument("--top", type=int, default=20)
     phase1.set_defaults(func=cmd_phase1)
+
+    plan = sub.add_parser("plan", parents=[common],
+                          help="decide what to do with each file, and rank it")
+    plan.add_argument("--top", type=int, default=20,
+                      help="how many of the best jobs to print")
+    plan.add_argument("--provisional", action="store_true",
+                      help="plan without a calibrated ladder; estimates are guesses "
+                           "and the decisions are not executable")
+    plan.set_defaults(func=cmd_plan)
 
     status = sub.add_parser("status", parents=[common],
                             help="what the database currently knows")

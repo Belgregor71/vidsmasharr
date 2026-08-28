@@ -115,6 +115,37 @@ def duplicates(request: Request, only: str = "all", page: int = 1):
     )
 
 
+@router.get("/plan")
+def plan(request: Request, page: int = 1):
+    """The ranked plan. Read-only, like every other page here."""
+    from app.plan import planner
+
+    db = request.app.state.db
+    totals = planner.totals(db)
+
+    offset = max(0, (page - 1) * PAGE_SIZE)
+    jobs = db.query(
+        """
+        SELECT d.*, mf.path, mf.size_bytes, t.name AS title_name
+        FROM decision d
+        JOIN media_file mf ON mf.id = d.file_id
+        LEFT JOIN title t ON t.id = d.title_id
+        WHERE d.state IN ('pending','provisional')
+        ORDER BY d.priority DESC
+        LIMIT ? OFFSET ?
+        """,
+        (PAGE_SIZE, offset),
+    )
+    hours = (totals["cpu_seconds"] or 0) / 3600
+
+    return _render(
+        request, "plan.html",
+        totals=totals, jobs=jobs, skips=totals["skips"], page=page, offset=offset,
+        pages=max(1, (totals["queued"] + PAGE_SIZE - 1) // PAGE_SIZE),
+        rate=(totals["saved"] / GB / hours) if hours else 0.0,
+    )
+
+
 @router.post("/duplicates/{group_id}/keeper")
 def set_keeper(request: Request, group_id: int, file_id: int = Form(...)):
     """Record that a human chose a different copy to keep."""

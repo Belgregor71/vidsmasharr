@@ -1,4 +1,4 @@
-# Handover — sessions 1–2 (2026-08-27 → 28)
+# Handover — sessions 1–3 (2026-08-27 → 28)
 
 Read this first. It records what is *verified* on the real hardware versus what
 is still assumed, so tomorrow doesn't re-litigate settled decisions or trust
@@ -21,8 +21,8 @@ roughly **two years** of overnight encoding to do exhaustively, so queue order
 decides everything.
 
 - Repo: https://github.com/Belgregor71/vidsmasharr (public)
-- 5 commits, `main`, local and remote in sync
-- 116 tests passing (Phase 1 added 72)
+- `main`, local and remote in sync
+- 161 tests passing (Phase 1 added 72, Phase 2 added 45)
 - Nothing has touched the media library. Phase 0 only reads and writes scratch.
 
 ## Container status: VERIFIED WORKING (2026-08-28)
@@ -220,10 +220,10 @@ docker/                two-ffmpeg image + DSM compose
 tests/                 116 tests
 ```
 
-**Phase 1 is built** (2026-08-28) and runs end to end on synthetic data, but
-has **not yet been run against the real library** -- that needs the NAS.
-Phases 2-4 (planner, encode pipeline, *arr guard) are not started. See
-`README.md` for the phase table.
+**Phases 1 and 2 are built** (2026-08-28) and run end to end on synthetic
+data, but neither has been **run against the real library** -- that needs the
+NAS. Phases 3-4 (encode pipeline, *arr guard) are not started. See `README.md`
+for the phase table.
 
 ### Phase 1 decisions worth not re-litigating
 
@@ -249,6 +249,70 @@ Phases 2-4 (planner, encode pipeline, *arr guard) are not started. See
 
 ---
 
+## Session 3 (2026-08-28): Phase 2 built
+
+Built while the calibration run was going on the NAS, so none of it has met the
+real library yet. 161 tests pass (Phase 2 added 45).
+
+```
+app/plan/rules.py      what to do with one file, and why   [SAFETY-CRITICAL]
+app/plan/estimate.py   predicted output size and encode time
+app/plan/profiles.py   profiles.yaml as production reads it
+app/plan/planner.py    rank everything into a queue, write decision rows
+app/cli.py             + `app plan [--top N] [--provisional]`
+app/web/               + the /plan page
+```
+
+`app plan` writes to the `decision` table and nothing else. Like the duplicate
+report, it is a document.
+
+### Phase 2 decisions worth not re-litigating
+
+- **Protected content is never rewritten *at all*, remux included.** A stream
+  copy looks safe because the video is untouched, but a Dolby Vision RPU can be
+  lost in one. One invariant with no carve-outs is easier to keep true than one
+  with an exception, and the exception would have bought only audio savings.
+- **A file in an open duplicate group is never queued.** Encoding a copy the
+  user is about to delete is the most expensive possible mistake on a box where
+  the queue is measured in months. Settle the duplicate report first; the files
+  become plannable the moment the group is resolved or dismissed.
+- **Priority is GB saved per encode-hour.** This gets the census's "size-first"
+  finding for free: encode time scales with duration and resolution, not with
+  bitrate, so of two same-length 1080p episodes the fatter one earns four times
+  as much from the same hour. Remuxes cost minutes rather than hours and float
+  to the top on the same formula, with no special case.
+- **`policy.min_source_bytes` defaults to 700MB**, which is the census's "SD
+  may not be worth encoding at all" as a config knob. Set it to 0 to consider
+  everything. The skip is always reported, never silent.
+- **A plan made without a calibrated ladder is written in a `provisional`
+  state, not `pending`.** Phase 3 selects on `pending`, so a guessed plan
+  cannot be executed by accident. `app plan` refuses to run at all without
+  profiles.yaml unless you pass `--provisional`.
+- **The estimator runs two models and keeps the one predicting less saving.**
+  A measured size ratio tracks how fat the source happened to be; a target
+  bitrate does not. Constant-quality output depends on picture complexity
+  rather than source bitrate, so the bitrate model is the more correct one --
+  but where they disagree, under-promising is the safe direction for a queue
+  this long. Every decision records which model produced its number, so Phase 4
+  can check the estimates against the `outcome` table.
+- **`EFFICIENT_CODECS` and the bitrate floors now live in `app/plan/rules.py`,
+  and `bench/runner.py` imports them.** They were duplicated. The benchmark has
+  to reject exactly what production rejects or the ladder gets calibrated on
+  jobs that will never run, and two copies of that would have drifted silently.
+
+### One thing the running calibration will not produce
+
+`bench/ladder.py` now records `expected_out_bitrate` per rung -- the measured
+output bitrate, which is what the planner would rather estimate with. **The
+calibration currently running was built from the tarball before that change**,
+so its profiles.yaml will not carry the field. Nothing breaks: `load_ladder`
+treats it as optional and the planner falls back to the policy target plus the
+measured size ratio. To get the better estimates, rebuild the container and
+re-run the benchmark at some later point -- it is not worth interrupting a
+run that is already hours in.
+
+---
+
 ## Next steps, in order
 
 1. ~~Rebuild and confirm libvmaf.~~ **Done 2026-08-28.**
@@ -269,15 +333,30 @@ Phases 2-4 (planner, encode pipeline, *arr guard) are not started. See
 4. **Verify direct play** — encode 2-3 real files at the ladder settings, play
    one on each TV, confirm Plex says "Direct Play" not "Transcode". Do not skip
    this; if either TV transcodes the codec choice must change.
-5. ~~**Phase 1** — scan, identify, duplicate report + UI.~~ **Built
-   2026-08-28.** Not yet run on the real library. First real run:
+5. **Run the plan for real**, once the calibration has written
+   `config/profiles.yaml`:
    ```sh
-   sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app phase1
+   sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app plan
    ```
-   Expect the first scan to take a while -- it ffprobes every file once. It is
-   largest-first and resumable, and `--probe-limit N` caps a run. Needs the
-   Plex token and *arr API keys in `config/config.yaml` to resolve identity
-   from anything better than filenames.
+   It refuses to run without a calibrated ladder; `--provisional` shows the
+   shape of the plan anyway, in a state Phase 3 cannot execute. Run
+   `app duplicates` first -- files in an unresolved duplicate group are
+   deliberately held out of the queue.
+6. **Phase 3**: the encode pipeline. Read `pending` decisions, encode in
+   scratch, verify with sampled VMAF, atomic swap, then delete. Everything it
+   needs is already on the decision row in `detail_json`.
+
+Steps 4 and 5 both need Phase 1 to have run on the real library first:
+
+```sh
+sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app phase1
+```
+
+~~**Phase 1** — scan, identify, duplicate report + UI.~~ **Built 2026-08-28**,
+not yet run for real. Expect the first scan to take a while -- it ffprobes every
+file once. It is largest-first and resumable, and `--probe-limit N` caps a run.
+Needs the Plex token and *arr API keys in `config/config.yaml` to resolve
+identity from anything better than filenames.
 
 ### A design consequence the census forces
 

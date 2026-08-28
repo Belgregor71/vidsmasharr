@@ -83,6 +83,9 @@ policy:
   # SDR 4K is downscaled to 1080p. HDR 4K is never touched -- Apollo Lake can
   # only encode HEVC in 8-bit, which would destroy the HDR grade permanently.
   downscale_sdr_4k: true
+  # Files smaller than this are never queued: same per-file cost, far less to
+  # reclaim. 700MB skips most SD content. Set to 0 to consider everything.
+  min_source_bytes: 734003200
   max_queued_per_title: 25
   audio_remux_min_saving_bytes: 314572800
 

@@ -151,3 +151,38 @@ class TestActionsAreReportOnly:
         client.post(f"/duplicates/{group_id}/keeper", data={"file_id": 99999})
 
         assert db.scalar("SELECT keeper_file_id FROM duplicate_group") == original
+
+
+class TestPlanPage:
+    def test_empty_plan_explains_how_to_build_one(self, client):
+        response = client.get("/plan")
+        assert response.status_code == 200
+        assert "app plan" in response.text
+
+    def test_shows_the_queue_ranked_by_value(self, client, db, tmp_path):
+        from app.config import Config
+        from app.plan import planner
+        from tests.test_plan import add_file, ladder_for_tests
+
+        add_file(db, "/media/tv/lean.mkv", size=3 * GB, bitrate=8_000_000)
+        add_file(db, "/media/tv/fat.mkv", size=9 * GB, bitrate=26_000_000)
+        planner.build(db, Config(config_dir=tmp_path), ladder=ladder_for_tests())
+
+        response = client.get("/plan")
+        assert response.status_code == 200
+        assert "fat.mkv" in response.text
+        # Best value first: the fat file outranks the lean one on the page.
+        assert response.text.index("fat.mkv") < response.text.index("lean.mkv")
+
+    def test_a_provisional_plan_says_so_loudly(self, client, db, tmp_path):
+        from app.config import Config
+        from app.plan import planner
+        from app.plan.profiles import provisional_ladder
+        from tests.test_plan import add_file
+
+        config = Config(config_dir=tmp_path)
+        add_file(db, "/media/tv/a.mkv")
+        planner.build(db, config, ladder=provisional_ladder(config.policy))
+
+        response = client.get("/plan")
+        assert "Provisional" in response.text

@@ -109,6 +109,12 @@ class PolicyConfig(BaseModel):
     # SDR 4K is downscaled to 1080p; HDR 4K is never touched (8-bit hardware
     # encode only -- see rules.py).
     downscale_sdr_4k: bool = True
+    # Below this, a file is not worth queueing at any ratio: it costs the same
+    # per-file overhead as a big one and reclaims a fraction as much. The
+    # library census found SD to be 35.7% of files but a small share of bytes,
+    # which is exactly the shape this exists to filter out. Set to 0 to encode
+    # everything regardless of size.
+    min_source_bytes: int = 700 * 1024**2
     # Don't let one big show monopolise the queue for weeks.
     max_queued_per_title: int = 25
     # Re-muxing purely to drop audio tracks is nearly free; do it when it buys

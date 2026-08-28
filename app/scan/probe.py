@@ -97,15 +97,7 @@ class MediaInfo:
 
     @property
     def resolution_tier(self) -> str:
-        h = self.v_height or 0
-        w = self.v_width or 0
-        if w >= 3000 or h >= 1700:
-            return "2160p"
-        if w >= 1800 or h >= 1000:
-            return "1080p"
-        if w >= 1200 or h >= 700:
-            return "720p"
-        return "sd"
+        return resolution_tier(self.v_width, self.v_height)
 
     def to_row(self) -> dict[str, Any]:
         return {
@@ -126,6 +118,22 @@ class MediaInfo:
 
 
 # ---------------------------------------------------------------- helpers
+
+
+def resolution_tier(width: int | None, height: int | None) -> str:
+    """Bucket a frame size into the tiers policy and the ladder are keyed by.
+
+    Generous lower bounds on purpose: 1920x800 scope-ratio film is 1080p even
+    though it is only 800 rows tall, and calling it 720p would price it wrong.
+    """
+    w, h = width or 0, height or 0
+    if w >= 3000 or h >= 1700:
+        return "2160p"
+    if w >= 1800 or h >= 1000:
+        return "1080p"
+    if w >= 1200 or h >= 700:
+        return "720p"
+    return "sd"
 
 
 def _to_int(value: Any) -> int | None:

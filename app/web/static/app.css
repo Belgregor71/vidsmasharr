@@ -103,3 +103,10 @@ button.ghost { background: transparent; color: var(--muted); }
 
 .pager { display: flex; gap: 1rem; align-items: center; justify-content: center; margin-top: 1.5rem; color: var(--muted); }
 .pager a { color: var(--accent); text-decoration: none; }
+
+/* plan */
+.warn-note { color: var(--warn); border-left: 3px solid var(--warn); padding-left: 0.75rem; }
+td.good { color: var(--good); }
+.tag.act-encode { color: var(--accent); border-color: #24384a; }
+.tag.act-downscale { color: var(--accent); border-color: #24384a; }
+.tag.act-remux { color: var(--good); border-color: #244a35; }

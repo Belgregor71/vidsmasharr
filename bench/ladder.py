@@ -41,6 +41,7 @@ class LadderEntry:
     quality: float
     quality_flag: str
     expected_size_ratio: float
+    expected_out_bitrate: int | None
     expected_fps: float | None
     extrapolated: bool
     samples: int
@@ -103,6 +104,21 @@ def _interpolate(points: list[tuple[float, float]], target: float) -> tuple[floa
     return round(quality, 1), False
 
 
+def _out_bitrate(m: Measurement) -> float | None:
+    """Output bits per second at this setting.
+
+    The planner estimates with a bitrate rather than a size ratio, because a
+    ratio is tied to how fat the source happened to be while constant-quality
+    output is not. Clip duration comes from the encoded frame count over the
+    source frame rate -- the clip was stream-copied, so its rate is the
+    source's.
+    """
+    if not (m.out_bytes and m.frames and m.src_fps):
+        return None
+    duration = m.frames / m.src_fps
+    return m.out_bytes * 8 / duration if duration > 0 else None
+
+
 def _expected_at(points: list[tuple[float, float]], quality: float) -> float:
     """Interpolate a secondary series (size ratio, fps) at the chosen quality."""
     points = sorted(points)
@@ -137,6 +153,10 @@ def build_ladder(
         quality_vmaf = [(m.quality, _metric(m)) for m in members]  # type: ignore[misc]
         quality_size = [(m.quality, m.size_ratio) for m in members if m.size_ratio]
         quality_fps = [(m.quality, m.fps) for m in members if m.fps]
+        quality_bitrate = [
+            (m.quality, rate) for m in members
+            if (rate := _out_bitrate(m)) is not None
+        ]
 
         if len(quality_vmaf) < 2:
             continue
@@ -152,7 +172,8 @@ def build_ladder(
                     encoder=encoder, content_class="unusable", resolution=resolution,
                     target_vmaf=0.0, quality=0.0,
                     quality_flag=QUALITY_FLAG.get(encoder, "q"),
-                    expected_size_ratio=round(best, 4), expected_fps=None,
+                    expected_size_ratio=round(best, 4),
+                    expected_out_bitrate=None, expected_fps=None,
                     extrapolated=True, samples=len(members),
                     note=(
                         f"NO USABLE SETTING: the smallest output was {best * 100:.0f}% "
@@ -196,6 +217,9 @@ def build_ladder(
                     expected_size_ratio=round(
                         _expected_at(quality_size, quality), 4
                     ) if quality_size else 0.0,
+                    expected_out_bitrate=int(
+                        _expected_at(quality_bitrate, quality)
+                    ) if quality_bitrate else None,
                     expected_fps=round(
                         _expected_at(quality_fps, quality), 2
                     ) if quality_fps else None,

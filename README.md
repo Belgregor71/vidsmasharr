@@ -40,11 +40,11 @@ costs some savings on one file; a false negative destroys it.
 |---|---|---|
 | 0 | Capability detection, benchmark, quality ladder | Done |
 | 1 | Scan, identify via Plex/*arr, duplicate report + UI | Done |
-| 2 | Decision engine, planner, dry-run plan | Not started |
+| 2 | Decision engine, planner, dry-run plan | Built |
 | 3 | Encode pipeline, verification, atomic swap, scheduler | Not started |
 | 4 | *arr profile guard, estimator calibration, x265 keepers | Not started |
 
-Nothing in the current code modifies your media library. Phases 0 and 1 only
+Nothing in the current code modifies your media library. Phases 0 to 2 only
 read files, and write to a scratch directory and the SQLite database.
 
 ## Phase 0: run this first
@@ -155,6 +155,59 @@ That runs three steps, each also available on its own:
   differ (likely different cuts), HDR-versus-resolution trade-offs, and copies
   too similar to separate are all marked *needs a human*.
 
+## Phase 2: the plan
+
+Phase 2 answers *what should we do, and in what order?* It writes rows to the
+`decision` table and nothing else. Like the duplicate report, it is a document.
+
+```sh
+docker compose -f docker/docker-compose.yml run --rm vidsmasharr app plan
+```
+
+Every probed file gets a decision and a reason, including the ones we decide to
+leave alone — "why isn't this file being encoded?" is the question you will
+actually ask, so the answer is recorded rather than implied.
+
+| Action | What it means |
+|---|---|
+| `encode` | Re-encode the video to HEVC at the calibrated setting |
+| `downscale` | SDR 4K, re-encoded down to 1080p |
+| `remux` | Stream copy: drop unwanted audio tracks, no video re-encode |
+| `skip` | Left alone, with the reason recorded |
+
+### Ordering is the whole point
+
+The queue is ranked by **GB reclaimed per hour of encoding**, not by size and
+not alphabetically. Two 1080p episodes of the same length cost the same hour
+whether one is 4 Mbps and the other 18 Mbps, so the fat one is worth four times
+as much of that hour. With roughly 15,000 candidate files against a Celeron
+J3455, the order the work happens in matters more than any encoder tuning.
+
+Free wins float to the top on their own merits: a remux that drops four foreign
+audio tracks costs minutes of disk I/O rather than hours of encoding, so it
+outranks every encode without needing a special case.
+
+Three things hold the queue back deliberately:
+
+- **Files below `policy.min_source_bytes`** (700MB by default) are never
+  queued. They cost the same per-file overhead as a big file and reclaim a
+  fraction as much — the census found SD to be 35.7% of files but a small share
+  of bytes.
+- **A file in an unresolved duplicate group is skipped**, so no CPU is spent on
+  a copy you may be about to delete. Settle the duplicate report first.
+- **`policy.max_queued_per_title`** stops one long-running show owning the
+  queue for a month. The rest are marked `deferred`, not skipped.
+
+### It will not plan executable work without a calibrated ladder
+
+`app plan` refuses to run until `config/profiles.yaml` exists, because without
+it every size and time is a guess from the policy targets rather than a
+measurement from this box. `--provisional` overrides that to show you the shape
+of the plan anyway; those decisions are written in a `provisional` state that
+the Phase 3 worker will refuse to execute.
+
+The plan is visible at **http://&lt;nas&gt;:8330/plan**.
+
 ## Safety model
 
 Enforced across the project, and the parts that exist already respect it:
@@ -192,7 +245,7 @@ python -m bench --libraries /path/to/media --allow-software-only \
 
 ```
 app/
-  cli.py               `app scan|identify|duplicates|phase1|status|serve`
+  cli.py               `app scan|identify|duplicates|phase1|plan|status|serve`
   config.py            YAML + env config, safe defaults
   db.py                SQLite schema and migrations
   scan/probe.py        ffprobe -> normalised facts, HDR detection
@@ -203,7 +256,11 @@ app/
   identity/filename.py fallback parsing, always below full confidence
   identity/resolve.py  merge the sources into title / file_title
   dedupe/groups.py     duplicate grouping and keeper ranking (report only)
-  web/                 FastAPI + Jinja2 UI: overview, duplicates, library
+  plan/rules.py        what to do with one file, and why  [SAFETY-CRITICAL]
+  plan/estimate.py     predicted output size and encode time
+  plan/profiles.py     the quality ladder as production reads it
+  plan/planner.py      rank every file into a queue; write decisions
+  web/                 FastAPI + Jinja2 UI: overview, duplicates, plan, library
   work/ffmpeg_cmd.py   encode + VMAF command construction
 bench/
   capability.py        what this box can actually do

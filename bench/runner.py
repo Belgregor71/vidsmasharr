@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.db import Database
+from app.plan.rules import EFFICIENT_CODECS, MIN_ENCODE_BITRATE
 from app.scan.probe import MediaInfo, probe
 from app.work.ffmpeg_cmd import QUALITY_FLAG, VideoSpec, build_encode_command, build_vmaf_command
 
@@ -46,6 +47,9 @@ class Measurement:
     in_bytes: int
     out_bytes: int
     size_ratio: float | None
+    # Source frame rate, so the ladder can turn out_bytes into an output
+    # bitrate -- which is what the planner actually estimates with.
+    src_fps: float | None = None
     vmaf_mean: float | None = None
     vmaf_min: float | None = None
     vmaf_p1: float | None = None
@@ -68,16 +72,11 @@ def _run_timed(cmd: list[str], timeout: int) -> tuple[subprocess.CompletedProces
     return result, wall, cpu
 
 
-# Codecs that are already at or beyond what our hardware encoder achieves.
-# Re-encoding these produces LARGER files -- observed on the first real run: a
-# 720p x265 source came out at 299% of its original size at qp=20. Policy skips
-# such files, so calibrating on them measures something we will never do.
-EFFICIENT_CODECS = {"hevc", "h265", "av1", "vp9"}
-
-# Below this, a file is already small enough that it is not a policy candidate
-# and makes a poor calibration subject.
-MIN_CANDIDATE_BITRATE = {"2160p": 8_000_000, "1080p": 2_500_000,
-                         "720p": 1_200_000, "sd": 600_000}
+# Rejection thresholds come from production policy (app/plan/rules.py) rather
+# than being restated here: the benchmark must reject exactly what the planner
+# rejects, or the ladder gets calibrated on jobs we will never run. Observed on
+# the first real run -- a 720p x265 clip came out at 299% of its original size.
+MIN_CANDIDATE_BITRATE = MIN_ENCODE_BITRATE
 
 
 def calibration_reject_reason(info: MediaInfo) -> str | None:
@@ -261,6 +260,7 @@ def measure(
         out_width=None, out_height=target_height or clip.info.v_height,
         frames=None, wall_seconds=0.0, cpu_seconds=0.0, fps=None,
         in_bytes=in_bytes, out_bytes=0, size_ratio=None,
+        src_fps=clip.info.v_fps,
     )
 
     try:

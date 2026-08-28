@@ -190,6 +190,17 @@ CREATE TABLE kv (
 """)
 
 
+# --- 6: planner output -- richer decisions than Phase 1 needed --------------
+migration("""
+ALTER TABLE decision ADD COLUMN title_id INTEGER;
+ALTER TABLE decision ADD COLUMN estimate_basis TEXT;
+-- Everything Phase 3 needs to build the command, and the UI needs to explain
+-- the decision: encoder, quality, target height, per-track audio handling.
+ALTER TABLE decision ADD COLUMN detail_json TEXT;
+CREATE INDEX idx_decision_action ON decision(state, action);
+""")
+
+
 class Database:
     """Thread-local connections over one SQLite file in WAL mode."""
 

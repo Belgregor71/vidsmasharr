@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Plan &middot; vidsmasharr{% endblock %}
+
+{% block content %}
+<h1>Plan</h1>
+<p class="note">
+  What we intend to do, ranked by GB reclaimed per hour of encoding. Nothing here
+  runs anything &mdash; this is a document, and it is regenerated from scratch
+  every time <code>app plan</code> runs.
+</p>
+
+{% if totals.queued == 0 and not totals.built_at %}
+  <div class="empty">
+    <p>No plan yet. Build one after a scan:</p>
+    <pre>docker compose -f docker/docker-compose.yml run --rm vidsmasharr app plan</pre>
+  </div>
+{% else %}
+
+{% if totals.provisional %}
+<p class="note warn-note">
+  <strong>Provisional.</strong> These decisions were made without a calibrated
+  quality ladder, so every size and time below is a guess from the policy
+  targets rather than a measurement from this box. Run the benchmark and plan
+  again before acting on any of it.
+</p>
+{% endif %}
+
+<section class="tiles">
+  <div class="tile">
+    <span class="k">{{ totals.saved | bytes }}</span>
+    <span class="l">reclaimable by encoding</span>
+    <span class="s">{{ totals.queued }} file(s) queued</span>
+  </div>
+  <div class="tile">
+    <span class="k">{{ (totals.cpu_seconds / 3600) | round | int }}h</span>
+    <span class="l">encoding time</span>
+    <span class="s">{{ ((totals.cpu_seconds / 3600) / 8) | round | int }} night(s) at 8h</span>
+  </div>
+  <div class="tile">
+    <span class="k">{{ rate | round(1) }}</span>
+    <span class="l">GB per encode-hour</span>
+    <span class="s">the whole point of the ordering</span>
+  </div>
+  <div class="tile{{ ' warn' if totals.deferred }}">
+    <span class="k">{{ totals.deferred }}</span>
+    <span class="l">deferred</span>
+    <span class="s">held back by the per-title cap</span>
+  </div>
+</section>
+
+<div class="cols">
+  <section>
+    <h2>By action</h2>
+    <table>
+      <thead><tr><th>Action</th><th class="n">Files</th><th class="n">Saves</th><th class="n">Costs</th></tr></thead>
+      <tbody>
+      {% for row in totals.by_action %}
+        <tr>
+          <td><span class="tag act-{{ row.action }}">{{ row.action }}</span></td>
+          <td class="n">{{ row.n }}</td>
+          <td class="n">{{ row.saved | bytes }}</td>
+          <td class="n">{{ (row.cpu / 3600) | round(1) }}h</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Not queued, because</h2>
+    <table>
+      <thead><tr><th>Reason</th><th class="n">Files</th></tr></thead>
+      <tbody>
+      {% for row in skips %}
+        <tr><td>{{ row.reason }}</td><td class="n">{{ row.n }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<h2 style="margin-top:1.5rem">Queue &mdash; best value first</h2>
+<table>
+  <thead>
+    <tr>
+      <th class="n">#</th><th>File</th><th>Action</th><th>Profile</th>
+      <th class="n">Size</th><th class="n">Saves</th><th class="n">Time</th><th class="n">GB/h</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in jobs %}
+    <tr>
+      <td class="n muted">{{ loop.index + offset }}</td>
+      <td>
+        {{ row.path.rsplit('/', 1)[-1] }}
+        <div class="path">{{ row.path }}</div>
+      </td>
+      <td><span class="tag act-{{ row.action }}">{{ row.action }}</span></td>
+      <td class="muted"><code>{{ row.profile or '-' }}</code></td>
+      <td class="n">{{ row.size_bytes | bytes }}</td>
+      <td class="n good">{{ row.est_saved_bytes | bytes }}</td>
+      <td class="n">{{ ((row.est_cpu_seconds or 0) / 3600) | round(1) }}h</td>
+      <td class="n">{{ row.priority | round(1) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if pages > 1 %}
+<div class="pager">
+  {% if page > 1 %}<a href="/plan?page={{ page - 1 }}">&larr; previous</a>{% endif %}
+  <span>page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}<a href="/plan?page={{ page + 1 }}">next &rarr;</a>{% endif %}
+</div>
+{% endif %}
+
+{% endif %}
+{% endblock %}
