@@ -6,6 +6,7 @@ interpolation needs to pick the *coarsest* setting that still clears the target
 past the target would ship visibly bad encodes.
 """
 
+from bench import ladder
 from bench.ladder import _interpolate, build_ladder, project_timeline
 from bench.runner import Measurement
 
@@ -158,3 +159,109 @@ def test_ladder_calibrates_on_the_mean_not_the_worst_frame():
         m.vmaf_p1 = 4.3          # the artifact seen on the first real run
     entry = build_ladder(good, {"tv": 92.0})[0]
     assert entry.quality == 26   # from the means, exactly as if p1 were sane
+
+
+class TestMultipleClipAggregation:
+    """Each group holds one series per calibration clip, sharing quality values.
+
+    Before these, duplicate quality values were fed straight to the
+    interpolator, which silently followed whichever clip sorted first -- in
+    practice the easiest one. The real 2026-08-28 run produced a 1080p TV rung
+    promising a 14% size ratio at a setting where the visible clip measured 39%
+    and scored VMAF 90.5 against a target of 92.
+    """
+
+    HARD = {20: (96.5, 0.72), 23: (94.0, 0.55), 26: (90.5, 0.39),
+            29: (83.4, 0.25), 32: (75.3, 0.17)}
+    EASY = {20: (99.0, 0.30), 23: (97.5, 0.22), 26: (95.0, 0.14),
+            29: (92.5, 0.10), 32: (88.0, 0.07)}
+
+    def _measurements(self):
+        from bench.runner import Measurement
+
+        out = []
+        for clip, series in (("hard", self.HARD), ("easy", self.EASY)):
+            for quality, (vmaf, ratio) in series.items():
+                out.append(Measurement(
+                    clip=clip, encoder="hevc_vaapi", quality=quality,
+                    src_width=1920, src_height=1080, out_width=None,
+                    out_height=1080, frames=720, wall_seconds=20.0,
+                    cpu_seconds=20.0, fps=35.0, in_bytes=100_000_000,
+                    out_bytes=int(100_000_000 * ratio), size_ratio=ratio,
+                    src_fps=24.0, vmaf_mean=vmaf,
+                ))
+        return out
+
+    def test_the_hardest_clip_governs_the_setting(self):
+        entries = ladder.build_ladder(self._measurements(), {"tv": 92.0})
+        rung = next(e for e in entries if e.content_class == "tv")
+
+        # The easy clip alone would have justified qp 26 or coarser. The hard
+        # clip scores 90.5 there, so the ladder must not go that far.
+        assert rung.quality < 26
+
+    def test_the_size_ratio_is_not_taken_from_the_easiest_clip(self):
+        entries = ladder.build_ladder(self._measurements(), {"tv": 92.0})
+        rung = next(e for e in entries if e.content_class == "tv")
+
+        # Somewhere between the two clips, never at or below the easy one.
+        easy_best = min(ratio for _, ratio in self.EASY.values())
+        assert rung.expected_size_ratio > easy_best
+
+    def test_disagreeing_clips_are_called_out(self):
+        entries = ladder.build_ladder(self._measurements(), {"tv": 92.0})
+        rung = next(e for e in entries if e.content_class == "tv")
+        assert "disagreed" in rung.note
+
+    def test_agreeing_clips_produce_no_warning(self):
+        from bench.runner import Measurement
+
+        out = []
+        for clip in ("a", "b"):
+            for quality, vmaf in ((20, 97.0), (23, 94.5), (26, 91.0), (29, 87.0)):
+                out.append(Measurement(
+                    clip=clip, encoder="hevc_vaapi", quality=quality,
+                    src_width=1920, src_height=1080, out_width=None,
+                    out_height=1080, frames=720, wall_seconds=20.0,
+                    cpu_seconds=20.0, fps=35.0, in_bytes=100_000_000,
+                    out_bytes=40_000_000, size_ratio=0.4, src_fps=24.0,
+                    vmaf_mean=vmaf,
+                ))
+        entries = ladder.build_ladder(out, {"tv": 92.0})
+        assert all("disagreed" not in e.note for e in entries)
+
+    def test_aggregation_collapses_duplicates(self):
+        points = [(20, 90.0), (20, 96.0), (23, 85.0), (23, 89.0)]
+        assert ladder._aggregate(points, "min") == [(20, 90.0), (23, 85.0)]
+        assert ladder._aggregate(points, "mean") == [(20, 93.0), (23, 87.0)]
+
+
+class TestProjection:
+    """SD encodes several times faster than 1080p and holds few of the bytes.
+
+    Averaging every rung together produced a headline of 61 fps on the real
+    run, a speed no 1080p file will ever see.
+    """
+
+    def _entry(self, resolution, fps):
+        return ladder.LadderEntry(
+            encoder="hevc_vaapi", content_class="tv", resolution=resolution,
+            target_vmaf=92.0, quality=24.0, quality_flag="qp",
+            expected_size_ratio=0.4, expected_out_bitrate=None,
+            expected_fps=fps, extrapolated=False, samples=10,
+        )
+
+    def test_sd_speed_does_not_inflate_the_estimate(self):
+        entries = [self._entry("1080p", 35.9), self._entry("sd", 157.5)]
+        projection = ladder.project_timeline(
+            entries, total_files=1000, average_minutes_per_file=45.0
+        )
+        assert projection["measured_encode_fps"] == 35.9
+        assert projection["projected_from"] == "1080p"
+
+    def test_no_measurements_at_that_resolution_is_an_error_not_a_guess(self):
+        projection = ladder.project_timeline(
+            [self._entry("sd", 157.5)], total_files=1000,
+            average_minutes_per_file=45.0,
+        )
+        assert "error" in projection

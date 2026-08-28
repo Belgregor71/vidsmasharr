@@ -8,8 +8,9 @@ unverified ones.
 
 ## Where we are
 
-**Phase 0 is unblocked and the library census is done. The calibration run is
-still outstanding.**
+**Phase 0 is complete: the calibration ran on 2026-08-28 and hevc_vaapi won
+outright. Direct play on the TVs is now the only unverified assumption left
+before bulk encoding.**
 
 The census settled the strategic question: **encoding is genuinely worth it
 here.** The library is 77% H.264 by file count and 91% by bytes, with roughly
@@ -22,7 +23,8 @@ decides everything.
 
 - Repo: https://github.com/Belgregor71/vidsmasharr (public)
 - `main`, local and remote in sync
-- 221 tests passing (Phase 1 added 72, Phase 2 added 45, Phase 3 added 60)
+- 228 tests passing (Phase 1 added 72, Phase 2 added 45, Phase 3 added 60,
+  the ladder fix added 7)
 - **Nothing has touched the media library yet.** Phase 3 now *can* -- it is
   the first code that deletes -- but it ships with `dry_run` on and
   `delete_original_on_success` off, and has never been run for real.
@@ -44,12 +46,13 @@ calibration run itself** — see Next Steps.
 
 <details><summary>Rebuild command, if the container ever needs recreating</summary>
 
+**Back up `config/` first.** Compose mounts `../config:/config`, so
+`/volume1/docker/vidsmasharr/config` holds `vidsmasharr.db` (the library index
+and every benchmark measurement), `profiles.yaml` and `config.yaml`. The
+`rm -rf` below would take all of it. One line, as the terminal needs:
+
 ```sh
-cd /volume1/docker && sudo rm -rf vidsmasharr vidsmasharr-main \
-  && sudo curl -sL https://github.com/Belgregor71/vidsmasharr/archive/refs/heads/main.tar.gz | sudo tar xz \
-  && sudo mv vidsmasharr-main vidsmasharr && cd vidsmasharr \
-  && sudo docker compose -f docker/docker-compose.yml build \
-  && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.capability
+cd /volume1/docker && sudo cp -a vidsmasharr/config /volume1/scratch/vidsmasharr-config.bak && sudo rm -rf vidsmasharr vidsmasharr-main && sudo curl -sL https://github.com/Belgregor71/vidsmasharr/archive/refs/heads/main.tar.gz | sudo tar xz && sudo mv vidsmasharr-main vidsmasharr && sudo cp -a /volume1/scratch/vidsmasharr-config.bak/. vidsmasharr/config/ && cd vidsmasharr && sudo docker compose -f docker/docker-compose.yml build && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.capability
 ```
 
 </details>
@@ -96,12 +99,13 @@ Extrapolated to the whole library:
   queue by predicted saving is worth more than any encoder tuning. The census
   now prints this curve directly.
 
-### Not yet measured
+### Now measured (2026-08-28)
 
-The one real fps figure so far (35.5 fps, 30.4 min/file) came from a **720p
-HEVC** source that policy would skip, so it is not valid. Encode speed on
-representative 1080p H.264 is still unknown, and every timeline estimate
-depends on it.
+~~The one real fps figure came from a 720p HEVC source policy would skip.~~
+Answered by run `9ece8030435f`: **hevc_vaapi does 1080p at 33.7-35.9 fps**,
+which is about **31 minutes per 45-minute episode**. See the calibration
+section below -- and note that run's own "17.7 min/file" headline was wrong,
+because it averaged SD speeds into the figure.
 
 ---
 
@@ -151,6 +155,11 @@ single biggest open risk in the whole project.
    highest-value chore outstanding** — see Open Questions.
 7. **`--remove-orphans` would delete their `dockersocket` container**, which
    belongs to another stack. The orphan warning is cosmetic; ignore it.
+9. **The rebuild command deletes the database.** `../config:/config` means
+   the SQLite file, `profiles.yaml` and `config.yaml` all live inside the repo
+   directory that `rm -rf vidsmasharr` removes. Losing it costs the whole
+   calibration run and a full re-scan. Back `config/` up first -- see the
+   rebuild command above -- or install Git and stop deleting the tree at all.
 8. **`sudo cmd > /volume1/scratch/...` fails with "Permission denied."** The
    shell opens the redirect as the *login user* before `sudo` ever runs, and
    scratch is root-owned. Put the redirect inside root:
@@ -229,7 +238,7 @@ bench/runner.py        clip extraction, encode matrix, VMAF, decode-mode probe
 bench/ladder.py        interpolates settings hitting VMAF targets -> profiles.yaml
 bench/__main__.py      the 5-step Phase 0 run
 docker/                two-ffmpeg image + DSM compose
-tests/                 221 tests
+tests/                 228 tests
 ```
 
 **Phases 1, 2 and 3 are built** (2026-08-28) and run end to end on synthetic
@@ -312,11 +321,10 @@ report, it is a document.
   to reject exactly what production rejects or the ladder gets calibrated on
   jobs that will never run, and two copies of that would have drifted silently.
 
-### One thing the running calibration will not produce
+### One thing the 2026-08-28 calibration did not produce
 
 `bench/ladder.py` now records `expected_out_bitrate` per rung -- the measured
-output bitrate, which is what the planner would rather estimate with. **The
-calibration currently running was built from the tarball before that change**,
+output bitrate, which is what the planner would rather estimate with. **The 2026-08-28 run was built from the tarball before that change**,
 so its profiles.yaml will not carry the field. Nothing breaks: `load_ladder`
 treats it as optional and the planner falls back to the policy target plus the
 measured size ratio. To get the better estimates, rebuild the container and
@@ -396,11 +404,86 @@ then a look at what lands in `/scratch/encoding`.
 
 ---
 
+## Calibration run 9ece8030435f (2026-08-28) — DONE, but re-derive the ladder
+
+60/60 encodes completed, no failures, VMAF on throughout. Hardware decode
+works for every encoder. **`hevc_vaapi` is both faster and better than
+`hevc_qsv` at every resolution**, which settles the encoder question:
+
+| | vaapi | qsv |
+|---|---|---|
+| 1080p movie (VMAF 95) | qp 19, 33.7 fps | gq 20, 25.6 fps, **never reached 95** |
+| 1080p tv (VMAF 92) | qp 26, 35.9 fps | gq 22, 27.9 fps |
+
+`hevc_qsv` failed to reach VMAF 95 at 1080p at any tested setting (best 94.4).
+Irrelevant in practice — vaapi is preferred and hits it — but it means qsv is
+not a fallback for movies.
+
+### The ladder from that run is optimistic, and was rebuilt
+
+The first ladder said **1080p TV: qp 26, 14% size ratio**. The raw log for the
+one clip we can read says qp 26 gave **39% size and VMAF 90.5** — below the 92
+target. Both numbers came from the same group, so they cannot both be right.
+
+Cause, since found and fixed: each group holds one measurement series *per
+calibration clip*, all sharing the same quality values. Those duplicate x
+values went straight into the interpolator, which followed whichever clip
+sorted first — in practice the easiest one. So the setting was chosen by the
+clip that compressed best and the size ratio was quoted from it too.
+
+`bench/ladder.py` now aggregates per setting before interpolating: **VMAF by
+`min`** so the hardest sampled content governs the setting, size and speed by
+`mean` because those are expectations rather than promises. It also warns when
+clips disagree by more than the verification margin, which they did here.
+
+Expect the corrected 1080p TV rung to land nearer **qp 23-24 at ~30-35%**
+rather than qp 26 at 14%. Still a very good result; just an honest one.
+
+**Re-derive it without re-encoding.** Every measurement is in `bench_result`,
+so this costs seconds rather than a night:
+
+```sh
+sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.ladder
+```
+
+### The timeline projection was wrong too, in the other direction
+
+It reported **61 fps / 17.7 min per file**. That averaged every hardware rung
+together including SD, which runs at 97-157 fps and holds almost none of the
+bytes. No 1080p file will ever see 61 fps. Projection now uses the 1080p rungs
+only: **roughly 31 min per 45-minute episode**, about 1.75x the reported
+figure. The `6000 files` in that output was always a placeholder — the census
+says ~15,400 candidates — and the real answer now comes from `app plan`, which
+counts actual files instead of assuming an average.
+
+### What the ratios say about policy
+
+- **SD is confirmed not worth encoding.** Movie SD came back at 77-82% of
+  source, well inside the 20% savings floor, so the planner skips it anyway.
+  `policy.min_source_bytes` (700MB) removes most of it before that.
+- **720p movie at 33% and 1080p at 39%** — the reclaim estimate holds.
+- Phase 0 measured that hardware decode works for every encoder. That answer
+  now travels: the planner records it on each decision and the worker builds
+  the command with it, instead of assuming.
+
+### Still outstanding, and the run says so itself
+
+**Direct play has not been verified on either TV.** Encode 2-3 real files at
+the corrected ladder settings, put them in Plex, and confirm both TVs say
+*Direct Play* rather than *Transcode*. If either transcodes, the CPU cost moves
+to playback and the whole HEVC plan needs revisiting — stop there rather than
+encoding thousands of files.
+
+---
+
 ## Next steps, in order
 
 1. ~~Rebuild and confirm libvmaf.~~ **Done 2026-08-28.**
 2. ~~Library census.~~ **Done 2026-08-28** — encoding is worth it, see above.
-3. **Run the real calibration** on representative H.264 content. The candidate
+3. ~~**Run the real calibration.**~~ **Done 2026-08-28**, run `9ece8030435f`. Re-derive the ladder after rebuilding, see above.
+   <details><summary>the original instructions</summary>
+
+   **Run the real calibration** on representative H.264 content. The candidate
    filter now rejects already-efficient sources automatically, so this should
    land on real material:
    ```sh
@@ -413,6 +496,8 @@ then a look at what lands in `/scratch/encoding`.
    What matters in the output: **fps on 1080p H.264** (replaces the invalid
    35.5 figure) and **size ratio at the chosen QP** (validates the 40-60%
    reduction assumption the whole 8-12 TB estimate rests on).
+
+   </details>
 4. **Verify direct play** — encode 2-3 real files at the ladder settings, play
    one on each TV, confirm Plex says "Direct Play" not "Transcode". Do not skip
    this; if either TV transcodes the codec choice must change.

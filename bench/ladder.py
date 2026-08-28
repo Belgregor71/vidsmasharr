@@ -31,6 +31,12 @@ FALLBACK_METRIC = "vmaf_p1"
 # "pick the least-bad setting".
 MAX_USEFUL_SIZE_RATIO = 0.95
 
+# Clips disagreeing by more than this at the chosen setting means the sample was
+# not representative of the library, and the ladder is only as good as it. Set to
+# match quality.vmaf_fail_margin: once the clips differ by more than the margin
+# verification allows, no single setting can satisfy both of them.
+WIDE_SPREAD_VMAF = 3.0
+
 
 @dataclass
 class LadderEntry:
@@ -65,6 +71,47 @@ def _resolution_of(m: Measurement) -> str:
     if height >= 700:
         return "720p"
     return "sd"
+
+
+def _aggregate(
+    points: list[tuple[float, float]], how: str = "mean"
+) -> list[tuple[float, float]]:
+    """Collapse several clips' measurements into one value per quality setting.
+
+    Every group holds one series per calibration clip, all sharing the same
+    quality values. Feeding that straight into an interpolator is meaningless:
+    with duplicate x values the "curve" zigzags, and both helpers below then
+    silently pick whichever clip happens to sort first -- in practice the
+    easiest one. That is how a ladder ends up promising a 14% size ratio at a
+    setting where the harder clip measured 39% and missed its VMAF target.
+
+    VMAF aggregates with `min`, so the *hardest* content we sampled governs the
+    setting. Picking the mean would put half the library below the target the
+    user asked for, and every one of those files then burns hours only to fail
+    verification. Size and speed aggregate with `mean`, because those are
+    expectations across the library rather than promises about any one file.
+    """
+    grouped: dict[float, list[float]] = {}
+    for quality, value in points:
+        grouped.setdefault(quality, []).append(value)
+
+    reducer = min if how == "min" else (lambda vs: sum(vs) / len(vs))
+    return sorted((quality, reducer(values)) for quality, values in grouped.items())
+
+
+def _spread(points: list[tuple[float, float]], quality: float) -> float:
+    """How much the clips disagreed around one setting.
+
+    Snaps to the nearest setting we actually measured, because the chosen
+    quality is usually interpolated and lands between sweep points. A wide
+    spread means the calibration clips were not representative of each other,
+    let alone of the library, and that is worth saying out loud.
+    """
+    if not points:
+        return 0.0
+    nearest = min({q for q, _ in points}, key=lambda q: abs(q - quality))
+    at_quality = [v for q, v in points if q == nearest]
+    return max(at_quality) - min(at_quality) if len(at_quality) > 1 else 0.0
 
 
 def _interpolate(points: list[tuple[float, float]], target: float) -> tuple[float, bool]:
@@ -150,13 +197,19 @@ def build_ladder(
         groups.setdefault((m.encoder, _resolution_of(m)), []).append(m)
 
     for (encoder, resolution), members in sorted(groups.items()):
-        quality_vmaf = [(m.quality, _metric(m)) for m in members]  # type: ignore[misc]
-        quality_size = [(m.quality, m.size_ratio) for m in members if m.size_ratio]
-        quality_fps = [(m.quality, m.fps) for m in members if m.fps]
-        quality_bitrate = [
-            (m.quality, rate) for m in members
-            if (rate := _out_bitrate(m)) is not None
-        ]
+        raw_vmaf = [(m.quality, _metric(m)) for m in members]  # type: ignore[misc]
+        raw_size = [(m.quality, m.size_ratio) for m in members if m.size_ratio]
+
+        # One value per setting, or the interpolation below is not interpolating
+        # anything -- see _aggregate.
+        quality_vmaf = _aggregate(raw_vmaf, "min")
+        quality_size = _aggregate(raw_size, "mean")
+        quality_fps = _aggregate([(m.quality, m.fps) for m in members if m.fps], "mean")
+        quality_bitrate = _aggregate(
+            [(m.quality, rate) for m in members
+             if (rate := _out_bitrate(m)) is not None],
+            "mean",
+        )
 
         if len(quality_vmaf) < 2:
             continue
@@ -194,18 +247,26 @@ def build_ladder(
             if encoder.endswith(("_vaapi", "_qsv")):
                 quality = float(int(quality))
             note = ""
+            vmaf_spread = _spread(raw_vmaf, quality)
+            if vmaf_spread >= WIDE_SPREAD_VMAF:
+                note = (
+                    f"the calibration clips disagreed by {vmaf_spread:.0f} VMAF at "
+                    f"this setting, so it is tuned to the hardest of them. Benchmark "
+                    f"more sources to narrow it."
+                )
             if extrapolated:
                 achieved = max(v for _, v in quality_vmaf)
                 if achieved < target:
-                    note = (
+                    extra = (
                         f"no tested setting reached VMAF {target}; best was "
                         f"{achieved:.1f}. Using the highest-quality setting tried."
                     )
                 else:
-                    note = (
+                    extra = (
                         "every tested setting beat the target; the true optimum is "
                         "likely coarser. Re-run the sweep with higher QP values."
                     )
+                note = f"{note} {extra}".strip() if note else extra
             entries.append(
                 LadderEntry(
                     encoder=encoder,
@@ -256,15 +317,33 @@ def project_timeline(
     average_minutes_per_file: float,
     average_fps_of_source: float = 24.0,
     hours_per_day: float = 8.0,
+    resolution: str = "1080p",
 ) -> dict:
     """How long would a full first pass take, in real calendar terms?
 
     Deliberately reported in days rather than seconds: the point is to make the
     scale of the job obvious before anyone starts it.
+
+    Projected from the 1080p rungs alone, not from the average of every rung.
+    SD encodes several times faster than 1080p, so averaging them together
+    produces a headline speed no real file will ever achieve -- and since SD
+    holds a small share of the bytes, it is not where the time goes either. The
+    honest per-file figure is the one for the content that actually gets
+    encoded.
     """
-    hw = [e for e in entries if e.expected_fps and e.encoder.endswith(("_vaapi", "_qsv"))]
+    hw = [
+        e for e in entries
+        if e.expected_fps
+        and e.encoder.endswith(("_vaapi", "_qsv"))
+        and e.resolution == resolution
+    ]
     if not hw:
-        return {"error": "no hardware measurements to project from"}
+        return {
+            "error": (
+                f"no hardware measurements at {resolution} to project from; "
+                f"benchmark some {resolution} sources"
+            )
+        }
 
     fps = sum(e.expected_fps for e in hw) / len(hw)  # type: ignore[misc]
     frames_per_file = average_minutes_per_file * 60 * average_fps_of_source
@@ -273,6 +352,7 @@ def project_timeline(
 
     return {
         "measured_encode_fps": round(fps, 1),
+        "projected_from": resolution,
         "minutes_per_file": round(seconds_per_file / 60, 1),
         "total_files": total_files,
         "total_cpu_hours": round(total_hours, 1),
@@ -309,3 +389,121 @@ def render_text(entries: list[LadderEntry]) -> str:
             seen.add(key)
             lines.append(f"  ! {e.encoder} {e.resolution}: {e.note}")
     return "\n".join(lines)
+
+
+# ------------------------------------------------------------------ rebuild
+
+
+def load_measurements(db, run_id: str) -> list[Measurement]:
+    """Rebuild Measurement objects from stored bench_result rows.
+
+    Every encode is recorded, so the ladder can be re-derived whenever the
+    interpolation changes without spending the hours again. `src_fps` is not
+    stored, so `expected_out_bitrate` comes back empty on a rebuild -- the
+    planner treats it as optional and falls back to the policy target.
+    """
+    rows = db.query(
+        "SELECT * FROM bench_result WHERE run_id=? ORDER BY id", (run_id,)
+    )
+    return [
+        Measurement(
+            clip=row["clip"], encoder=row["encoder"], quality=row["quality_value"],
+            src_width=row["src_width"], src_height=row["src_height"],
+            out_width=row["out_width"], out_height=row["out_height"],
+            frames=row["frames"], wall_seconds=row["wall_seconds"] or 0.0,
+            cpu_seconds=row["cpu_seconds"] or 0.0, fps=row["fps"],
+            in_bytes=row["in_bytes"] or 0, out_bytes=row["out_bytes"] or 0,
+            size_ratio=row["size_ratio"], src_fps=None,
+            vmaf_mean=row["vmaf_mean"], vmaf_min=row["vmaf_min"],
+            vmaf_p1=row["vmaf_p1"], ok=bool(row["ok"]), error=row["error"],
+        )
+        for row in rows
+    ]
+
+
+def latest_run_id(db) -> str | None:
+    return db.scalar("SELECT run_id FROM bench_result ORDER BY id DESC LIMIT 1")
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Re-derive profiles.yaml from measurements already in the database.
+
+    `python -m bench.ladder` after a benchmark run costs seconds, where
+    re-running the benchmark costs a night.
+    """
+    import argparse
+    from pathlib import Path
+
+    from app.config import load_config
+    from app.db import Database
+
+    parser = argparse.ArgumentParser(
+        prog="bench.ladder",
+        description="rebuild the quality ladder from stored benchmark results",
+    )
+    parser.add_argument("--config", default=None)
+    parser.add_argument("--db", default=None)
+    parser.add_argument("--run-id", default=None,
+                        help="which benchmark run to use (default: the most recent)")
+    parser.add_argument("--out", default=None,
+                        help="where to write profiles.yaml (default: the config dir)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="print the ladder without writing profiles.yaml")
+    args = parser.parse_args(argv)
+
+    config = load_config(Path(args.config) if args.config else None)
+    db = Database(Path(args.db) if args.db else config.db_path)
+
+    run_id = args.run_id or latest_run_id(db)
+    if not run_id:
+        print("No benchmark results stored. Run `bench` first.")
+        return 2
+
+    measurements = load_measurements(db, run_id)
+    scored = [m for m in measurements if m.ok and _metric(m) is not None]
+    print(f"run {run_id}: {len(measurements)} measurement(s), {len(scored)} scored\n")
+
+    targets = {"movie": config.quality.movie_vmaf, "tv": config.quality.tv_vmaf}
+    entries = build_ladder(measurements, targets)
+    if not entries:
+        print("Nothing usable in that run.")
+        return 1
+
+    print(render_text(entries))
+
+    preferred = None
+    hardware = [e.encoder for e in entries if e.encoder.endswith(("_vaapi", "_qsv"))]
+    if hardware:
+        preferred = max(set(hardware), key=hardware.count)
+
+    if args.dry_run:
+        print("\nDry run: profiles.yaml not written.")
+        return 0
+
+    out = Path(args.out) if args.out else config.profiles_path
+
+    # bench_result does not store which decode path was chosen, so carry the
+    # existing file's answer forward rather than silently dropping it --
+    # production has to decode the way the benchmark measured or the fps is a
+    # fiction.
+    decode_modes = {}
+    if out.exists():
+        from app.plan.profiles import load_ladder
+
+        existing = load_ladder(out)
+        if existing:
+            decode_modes = existing.hw_decode
+            if decode_modes:
+                print(f"\ncarrying forward hw_decode from the existing "
+                      f"{out.name}: {decode_modes}")
+
+    out.write_text(
+        to_profiles_yaml(entries, preferred, decode_modes, run_id=run_id),
+        encoding="utf-8",
+    )
+    print(f"\nWrote {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

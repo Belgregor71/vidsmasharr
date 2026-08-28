@@ -277,7 +277,9 @@ def build_command(row, info: MediaInfo, config, *, dest: Path, threads: int):
         quality=float(detail.get("quality") or 24),
         target_height=detail.get("target_height"),
         preset=config.encoder.x265_preset,
-        hw_decode=True,
+        # Measured by Phase 0, carried through the plan. Defaults true only
+        # because a plan written before this existed has nothing to say.
+        hw_decode=bool(detail.get("hw_decode", True)),
     )
     cmd = build_encode_command(
         ffmpeg=config.ffmpeg,

@@ -260,6 +260,10 @@ def decide(facts: FileFacts, config, ladder, estimator) -> PlannedDecision:
 
     if not blocked and rung is not None:
         estimate = estimator.encode(facts, rung, target_height, config)
+        # Phase 0 measured which decode path is faster (and which works at all)
+        # for this encoder. Carry it onto the decision so the worker runs the
+        # command that was actually benchmarked.
+        estimate.detail["hw_decode"] = ladder.hw_decode.get(rung.encoder, True)
         saved_pct = (
             100.0 * estimate.saved_bytes / facts.size_bytes if facts.size_bytes else 0.0
         )

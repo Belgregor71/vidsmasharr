@@ -261,10 +261,12 @@ def run(args: argparse.Namespace) -> int:
     if "error" in projection:
         print(projection["error"])
     else:
-        print(f"measured encode speed   : {projection['measured_encode_fps']} fps")
+        print(f"measured encode speed   : {projection['measured_encode_fps']} fps "
+              f"(at {projection['projected_from']}, where the time actually goes)")
         print(f"time per file           : {projection['minutes_per_file']} min")
-        print(f"assumed library size    : {projection['total_files']} files "
-              f"@ {args.average_minutes} min average")
+        print(f"ASSUMED library size    : {projection['total_files']} files "
+              f"@ {args.average_minutes} min average  <- a guess; pass "
+              f"--library-files with the real count")
         print(f"total encoding time     : {projection['total_cpu_hours']} hours")
         print(f"  overnight only ({args.night_hours}h/day): "
               f"{projection['calendar_days_at_night_only']} days")
