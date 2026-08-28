@@ -65,7 +65,7 @@ rejects anything under VMAF 89 -- it is **wasted CPU**, which is the one
 resource the whole project rations. Broaden it before bulk encoding:
 
 ```sh
-sudo nohup docker compose -f docker/docker-compose.yml run --rm -T vidsmasharr bench --libraries /media/tv --content-class tv --sources 6 --keep-clips > /volume1/scratch/vidsmasharr/bench-tv2.log 2>&1 &
+sudo sh -c 'cd /volume1/docker/vidsmasharr && nohup docker compose -f docker/docker-compose.yml run --rm -T vidsmasharr bench --libraries /media/tv --content-class tv --sources 6 --keep-clips > /volume1/scratch/vidsmasharr/bench-tv2.log 2>&1 &'
 ```
 
 New runs tag their own content class, so only the old run still needs
@@ -591,9 +591,12 @@ single biggest open risk in the whole project.
    directory that `rm -rf vidsmasharr` removes. Losing it costs the whole
    calibration run and a full re-scan. Back `config/` up first -- see the
    rebuild command above -- or install Git and stop deleting the tree at all.
-8. **`sudo cmd > /volume1/scratch/...` fails with "Permission denied."** The
-   shell opens the redirect as the *login user* before `sudo` ever runs, and
-   scratch is root-owned. Put the redirect inside root:
+8. **`sudo cmd > /volume1/scratch/...` fails with "Permission denied."**
+   **Hit twice now, once on 2026-08-29 from a command written straight past
+   this very note.** Every backgrounded command in this file is written in the
+   `sudo sh -c '...'` form for that reason -- do not "simplify" one back.
+   The shell opens the redirect as the *login user* before `sudo` ever runs,
+   and scratch is root-owned. Put the redirect inside root:
    `sudo sh -c 'nohup docker compose ... > /volume1/scratch/vidsmasharr/bench.log 2>&1 &'`
    The job number prints and then the job dies, so it looks like it started.
 
@@ -945,7 +948,7 @@ encoding thousands of files.
    ```
    Background it — the full matrix is hours, and an SSH drop kills it:
    ```sh
-   sudo nohup docker compose -f docker/docker-compose.yml run --rm -T vidsmasharr      bench --libraries /media/tv /media/movies --sources 4 --keep-clips      > /volume1/scratch/vidsmasharr/bench.log 2>&1 &
+   sudo sh -c 'cd /volume1/docker/vidsmasharr && nohup docker compose -f docker/docker-compose.yml run --rm -T vidsmasharr bench --libraries /media/tv /media/movies --sources 4 --keep-clips > /volume1/scratch/vidsmasharr/bench.log 2>&1 &'
    ```
    What matters in the output: **fps on 1080p H.264** (replaces the invalid
    35.5 figure) and **size ratio at the chosen QP** (validates the 40-60%
