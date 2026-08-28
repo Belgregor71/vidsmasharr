@@ -35,6 +35,12 @@ class ArrConfig(BaseModel):
     url: str = ""
     api_key: str = ""
     path_map: dict[str, str] = Field(default_factory=dict)
+    # After we replace a file, ask this *arr to re-read it. Nothing on disk
+    # changes -- it only updates the *arr's own idea of what the file is, which
+    # is what lets the guard's custom format match it and what makes a later
+    # `app arr-rename` able to propose anything. Off by default because it is a
+    # write to something outside this project, however harmless.
+    notify_on_replace: bool = False
 
 
 class TautulliConfig(BaseModel):

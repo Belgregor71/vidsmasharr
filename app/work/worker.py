@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.db import Database
+from app.guard import arr_notify
 from app.plan.rules import DOWNSCALE, ENCODE, REMUX
 from app.scan.probe import (
     PROBE_VERSION,
@@ -437,6 +438,12 @@ def run_decision(
     _finish_job(db, job_id, "done", elapsed, vmaf=_vmaf_json(verdict))
     _record_outcome(db, job_id, row, info, verdict, installed, elapsed)
 
+    # Tell the *arr the file changed under it, if it has been asked to care.
+    # Only once the original is really gone: while outputs are being held in
+    # scratch the library file is still the one the *arr already knows about.
+    if installed.original_deleted:
+        arr_notify.notify_replaced(config, installed.final_path, progress=progress)
+
     if installed.original_deleted and verdict.out_info and installed.final_path:
         _adopt_output(db, row["file_id"], installed.final_path, verdict.out_info)
         # The intent has been carried out. `outcome` is the permanent record;
@@ -796,6 +803,8 @@ def install_held(db: Database, config, *, progress=print) -> WorkerStats:
         # from here.
         if not _mark_installed(db, row["job_id"]):
             _record_outcome(db, row["job_id"], row, info, structure, installed, 0.0)
+        if installed.original_deleted and installed.final_path:
+            arr_notify.notify_replaced(config, installed.final_path, progress=progress)
         if installed.final_path:
             _adopt_output(db, row["file_id"], installed.final_path, structure.out_info)
         db.execute("DELETE FROM decision WHERE id=?", (row["id"],))

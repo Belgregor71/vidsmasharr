@@ -340,6 +340,40 @@ Three things it tells you that are worth reading before you apply it:
   replace a WEB-DL HEVC file whatever it scores. That is the profile doing what
   you told it to, and the guard does not override it.
 
+### Making the guard reach our own files
+
+A custom format matches a release *title*, and our encode replaces the bytes
+while keeping the name — which still says `x264`. So the moment after a swap,
+the *arr believes the file is H.264 and the format it was just given matches
+nothing. `app arr-guard` measures this and reports it: on the instances this
+was developed against, 0 of 186 sampled encode candidates carried a name the
+format would reach.
+
+The fix is usually cheap, because the *arr's naming format very likely already
+ends in the video codec token and renaming is already enabled. The file only
+needs the *arr to look at it again. That is two actions of very different
+weight, and they are kept apart:
+
+- **Rescan** asks the *arr to re-read the file and update its own database.
+  Nothing on disk changes. Set `sonarr.notify_on_replace` (and the Radarr one)
+  to have the worker do this itself after each replacement.
+- **Rename** changes filenames in a library Plex has already indexed. Never
+  automatic:
+
+  ```sh
+  docker compose -f docker/docker-compose.yml run --rm vidsmasharr app arr-rename
+  ```
+
+  That prints the *arr's own preview — every old name and the new one it would
+  get — and moves nothing. `--apply` lets it happen. Only items holding files
+  this project has actually replaced are considered; someone else's
+  badly-named library is not ours to tidy.
+
+**Check the `path_map`.** An *arr reports paths as *its own container* sees
+them. On the instances here that is `/data/media/...`, not the NAS host path
+`/volume1/data/media/...`. Getting it wrong breaks nothing loudly — matches
+simply fail to line up and identity quietly falls back to filenames.
+
 ### Estimator calibration
 
 The queue is ordered by predicted GB per encode-hour, so an estimate that is
@@ -433,7 +467,7 @@ python -m bench --libraries /path/to/media --allow-software-only \
 ```
 app/
   cli.py               `app scan|identify|duplicates|phase1|plan|work|
-                        arr-guard|calibrate|status|serve`
+                        arr-guard|arr-rename|calibrate|status|serve`
   config.py            YAML + env config, safe defaults
   db.py                SQLite schema and migrations
   scan/probe.py        ffprobe -> normalised facts, HDR detection
@@ -451,6 +485,7 @@ app/
   plan/calibrate.py    correct the estimator against jobs that really ran
   plan/keepers.py      the hand-written list that gets software x265
   guard/arr_guard.py   stop the *arrs undoing the encoding  [writes outside]
+  guard/arr_notify.py  tell the *arrs a file changed; rescan, then rename
   web/                 FastAPI + Jinja2 UI: overview, duplicates, plan,
                        activity, library
   work/ffmpeg_cmd.py   encode + VMAF command construction

@@ -746,6 +746,38 @@ class TestTheRecordItLeaves:
         assert row["cpu_seconds"] == 1234.0
         assert row["vmaf_mean"] == 94.5
 
+    def test_the_arr_is_told_only_once_the_original_is_really_gone(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        """While the output is held in scratch, the file in the library is
+        still the one the *arr already knows about. Telling it to re-read an
+        unchanged file would be noise at best, and at worst would rename
+        something we have not touched."""
+        from app.guard import arr_notify
+
+        told = []
+        monkeypatch.setattr(
+            arr_notify, "notify_replaced",
+            lambda cfg, path, progress=None: told.append(str(path)),
+        )
+
+        self.succeed(db, config, tmp_path, monkeypatch, delete=False)
+        assert told == []
+
+    def test_the_arr_is_told_when_the_original_is_replaced(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        from app.guard import arr_notify
+
+        told = []
+        monkeypatch.setattr(
+            arr_notify, "notify_replaced",
+            lambda cfg, path, progress=None: told.append(str(path)),
+        )
+
+        self.succeed(db, config, tmp_path, monkeypatch, delete=True)
+        assert len(told) == 1
+
     def test_a_downscale_is_recorded_at_the_resolution_it_ran_at(
         self, db, config, tmp_path, monkeypatch
     ):

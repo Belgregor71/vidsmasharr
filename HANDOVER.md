@@ -68,8 +68,39 @@ own files. Two things in that output need a human:
   common deliberate setting, and while it stands nothing the guard adds
   protects anything. `--neutralise` raises those to zero, opt-in.
 
-Then `--apply`. Every write is recorded in `guard_change`, and
-`app arr-guard --revert` puts it all back.
+**Decided 2026-08-28:** apply it *with* `--neutralise`, because Radarr's
+`x265 (HD)` at -10000 would otherwise defeat the guard for every film below 4K.
+That is now safe to do — the detector no longer confuses BR-DISK for an HEVC
+rule, so `--neutralise` leaves the disc-image penalty alone:
+
+```sh
+sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app arr-guard --apply --neutralise
+```
+
+Every write is recorded in `guard_change`, and `app arr-guard --revert` puts it
+all back.
+
+### 3b. Turn on the rescan, and rename once
+
+The guard cannot match our files until the *arr re-reads them: our encode keeps
+the `[x264]` name. Set `notify_on_replace: true` for both services in
+config.yaml and the worker will ask the owning *arr to re-read each file it
+replaces. Nothing on disk changes.
+
+Then, after the first batch, let them rename:
+
+```sh
+sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app arr-rename
+```
+
+Prints the *arr's own preview of every new name and moves nothing; `--apply`
+does it. Only items holding files we have actually replaced are considered.
+
+**Check `path_map` first.** Measured on the live instances: both report paths
+as `/data/media/...`, which is their own container's view — *not* the NAS host
+path `/volume1/data/media/...` that `config.example.yaml` used to suggest. With
+the wrong map nothing errors; *arr matches simply never line up with our files.
+The example config is fixed, but any `config.yaml` already on the NAS is not.
 
 ### 4. Run the plan and the first real encode
 
@@ -117,7 +148,7 @@ app/cli.py               + `app arr-guard [--apply] [--revert] [--neutralise]`
 app/web/                 /activity now breaks accuracy out per estimator model
 ```
 
-293 tests pass (Phase 4 added 60, plus one regression test from the end-to-end run below).
+316 tests pass.
 
 ### A bug found on the way in, and it mattered
 
@@ -288,6 +319,41 @@ and the custom format matches. Nothing in the project triggers that today.
 That is the next thing worth building, and it is deliberately not built yet:
 it writes to the *arrs (`POST /command`) and it renames files in the library
 that Plex has already indexed. Both are the user's call.
+
+### Session 4, later: the rescan step, and two more findings
+
+Decided with the user and built: the worker can now tell the owning *arr that a
+file changed (`notify_on_replace`, off by default), and `app arr-rename` shows
+the *arr's own rename preview and applies it only when asked. Rescan is
+automatic because it changes nothing on disk; renaming is not, because it
+changes filenames Plex has indexed.
+
+Two things came out of pointing it at the live instances:
+
+- **The documented `path_map` was wrong.** `config.example.yaml` mapped
+  `/volume1/data/media`, the NAS host path. Both *arrs actually report
+  `/data/media/...`, their own container's view. Nothing errors with the wrong
+  map -- *arr matches just never line up with our files, and Phase 1 identity
+  silently falls back to filenames. Fixed in the example; a `config.yaml`
+  already written on the NAS needs the same change by hand. There is a test
+  named for this failure mode.
+- **Sonarr's rename preview is slow enough to time out.** `GET /rename` is
+  computed server-side over every file in the series and blew past the 30s
+  default on a six-season show. That one call now gets 180s; the rest keep the
+  normal timeout.
+
+Radarr's preview was verified live and returns exactly the expected shape --
+`A.Dog's.Way.Home.2019.720p.BluRay.x264-[YTS.AM].mp4` becomes
+`A Dogs Way Home (2019) {imdb-tt7616798} [Bluray-720p][AAC 2.0][x264].mp4`,
+which is the naming format doing its job. After a re-encode and a rescan the
+last bracket becomes `[HEVC]`, and the guard's format matches it.
+
+**The command names are still unverified.** `RescanSeries`, `RescanMovie` and
+`RenameFiles` are posted to `/command`, and posting is a write, so none of them
+has been tried against the live instances. The read-only halves -- listing
+items, locating a file by folder, previewing renames -- are all confirmed. If a
+command name is wrong the *arr rejects it and the error is reported; it cannot
+damage anything.
 
 ### What Phase 4 has not met
 

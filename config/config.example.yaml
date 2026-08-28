@@ -30,19 +30,30 @@ tautulli:
   url: http://192.168.1.10:8181
   api_key: ""
 
+# NOTE the path_map. An *arr reports paths as ITS OWN container sees them, not
+# as the NAS does. Checked against the live instances on 2026-08-28, both report
+# /data/media/... -- NOT /volume1/data/media/..., which is the host path. Get
+# this wrong and nothing breaks loudly: every *arr match simply fails to line up
+# with a file we know about, and identity quietly falls back to filenames.
+# Confirm yours with: curl -s -H "X-Api-Key: KEY" http://NAS:8989/api/v3/series | head
 sonarr:
   enabled: true
   url: http://192.168.1.10:8989
   api_key: ""
   path_map:
-    "/volume1/data/media": "/media"
+    "/data/media": "/media"
+  # After we replace a file, ask Sonarr to re-read it so its own renaming turns
+  # [x264] into [HEVC] and the guard's custom format can match it. Nothing on
+  # disk changes; the renaming itself is a separate, manual `app arr-rename`.
+  notify_on_replace: false
 
 radarr:
   enabled: true
   url: http://192.168.1.10:7878
   api_key: ""
   path_map:
-    "/volume1/data/media": "/media"
+    "/data/media": "/media"
+  notify_on_replace: false
 
 # The *arr guard: stops Sonarr and Radarr replacing the HEVC files we make with
 # fresh H.264 downloads, which would undo every night of encoding. Run

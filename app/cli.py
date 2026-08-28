@@ -9,6 +9,7 @@ The container's ENTRYPOINT is `python3 -m`, so on the NAS these read as:
     docker compose ... run --rm vidsmasharr app plan
     docker compose ... run --rm vidsmasharr app work
     docker compose ... run --rm vidsmasharr app arr-guard
+    docker compose ... run --rm vidsmasharr app arr-rename
     docker compose ... run --rm vidsmasharr app calibrate
 """
 
@@ -21,7 +22,7 @@ from pathlib import Path
 from app.config import Config, load_config
 from app.db import Database
 from app.dedupe import groups
-from app.guard import arr_guard
+from app.guard import arr_guard, arr_notify
 from app.identity import resolve
 from app.plan import calibrate, planner
 from app.plan.profiles import resolve_ladder
@@ -301,6 +302,78 @@ def cmd_arr_guard(args) -> int:
     return 0 if not failed else 1
 
 
+def cmd_arr_rename(args) -> int:
+    """Let the *arrs rename the files we re-encoded, so the guard can see them.
+
+    An *arr scores a file by its name. Ours keep the name they had, which says
+    x264, so the guard's custom format cannot match them until the *arr renames
+    them -- which it will, because the video codec is already in its naming
+    format, once it has re-read the file.
+
+    The preview is the *arr's own: it computes every new name, we print it, and
+    nothing moves until `--apply`. These are library filenames Plex has already
+    indexed, so this is not a decision to make on anyone's behalf.
+    """
+    config, db = _load(args)
+    _header("ARR RENAME  let the *arrs rename what we re-encoded")
+
+    if not db.scalar("SELECT COUNT(*) FROM outcome"):
+        print("  Nothing has been re-encoded yet, so there is nothing to rename.")
+        return 0
+
+    total = 0
+    failed = 0
+    for service in (args.services or ["sonarr", "radarr"]):
+        client = arr_guard.client_for(service, config)
+        if client is None:
+            continue
+        print(f"  {service.upper()}")
+        try:
+            items = arr_notify.items_we_have_touched(db, config, service, client)
+        except Exception as exc:  # noqa: BLE001
+            print(f"    could not ask: {exc}\n")
+            failed += 1
+            continue
+
+        proposals = []
+        for item in items:
+            try:
+                proposals.extend(arr_notify.rename_preview(client, service, item))
+            except Exception as exc:  # noqa: BLE001
+                print(f"    {item.title}: {exc}")
+                failed += 1
+
+        if not proposals:
+            print("    nothing to rename. If you expected changes here, the *arr "
+                  "has not\n    re-read the files yet -- turn on "
+                  f"{service}.notify_on_replace, or rescan by hand.\n")
+            continue
+
+        for proposal in proposals:
+            print(f"    {proposal.summary}")
+        total += len(proposals)
+        print()
+
+        if args.apply:
+            by_item: dict[int, list] = {}
+            for proposal in proposals:
+                by_item.setdefault(proposal.item.item_id, []).append(proposal)
+            for group in by_item.values():
+                state = arr_notify.rename_apply(
+                    client, service, group[0].item, [p.file_id for p in group]
+                )
+                print(f"    renamed {len(group)} file(s) in "
+                      f"{group[0].item.title} ({state})")
+
+    if not args.apply:
+        print(f"  {total} file(s) would be renamed. Nothing has been moved.")
+        if total:
+            print("  Run again with --apply to let the *arrs do it.")
+            print("  Plex will re-index the renamed files; it handles this fine, "
+                  "but it\n  is why this is not automatic.")
+    return 1 if failed else 0
+
+
 def cmd_calibrate(args) -> int:
     """Check the estimator against the jobs that have actually run."""
     config, db = _load(args)
@@ -480,6 +553,18 @@ def build_parser() -> argparse.ArgumentParser:
     guard.add_argument("--services", nargs="*", choices=["sonarr", "radarr"],
                        default=None, help="just one of them")
     guard.set_defaults(func=cmd_arr_guard)
+
+    rename = sub.add_parser(
+        "arr-rename", parents=[common],
+        help="let Sonarr/Radarr rename the files we re-encoded, so the guard "
+             "can match them",
+    )
+    rename.add_argument("--apply", action="store_true",
+                        help="really rename. These are library filenames Plex "
+                             "has indexed, so it is never the default")
+    rename.add_argument("--services", nargs="*", choices=["sonarr", "radarr"],
+                        default=None)
+    rename.set_defaults(func=cmd_arr_rename)
 
     calibrate_cmd = sub.add_parser(
         "calibrate", parents=[common],
