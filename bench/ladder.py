@@ -10,6 +10,7 @@ becomes what the encoder uses in production.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, asdict
 
 import yaml
@@ -559,6 +560,42 @@ def all_run_ids(db) -> list[str]:
     ]
 
 
+def describe_runs(db) -> str:
+    """Every stored run, with enough to tell them apart and label them.
+
+    You need the run ids to pass --run-class, and hunting for them by feeding
+    the tool a wrong one and reading the error was the alternative.
+    """
+    rows = db.query(
+        "SELECT run_id, COUNT(*) n, MIN(created_at) started, "
+        "       COUNT(DISTINCT clip) clips, "
+        "       GROUP_CONCAT(DISTINCT content_class) classes "
+        "FROM bench_result GROUP BY run_id ORDER BY MIN(id)"
+    )
+    if not rows:
+        return "No benchmark results stored. Run `bench` first."
+
+    lines = ["=== stored benchmark runs ===", ""]
+    for row in rows:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["started"] or 0))
+        classes = row["classes"] or "(not recorded -- use --run-class)"
+        lines.append(
+            f"  {row['run_id']}  {when}  {row['n']:>4} measurement(s)  "
+            f"{row['clips']} clip(s)  class: {classes}"
+        )
+    lines.append("")
+    lines.append("  Clips in each run, so you can tell a movie run from a TV one:")
+    for row in rows:
+        clips = db.query(
+            "SELECT DISTINCT clip FROM bench_result WHERE run_id=? ORDER BY clip",
+            (row["run_id"],),
+        )
+        lines.append(f"    {row['run_id']}:")
+        for clip in clips:
+            lines.append(f"      {clip['clip'][:66]}")
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Re-derive profiles.yaml from measurements already in the database.
 
@@ -584,6 +621,10 @@ def main(argv: list[str] | None = None) -> int:
                              "instead of replacing it")
     parser.add_argument("--all-runs", action="store_true",
                         help="build from every stored run")
+    parser.add_argument("--list-runs", action="store_true",
+                        help="print every stored run with its id, date and clips, "
+                             "then stop. This is where the ids for --run-class "
+                             "come from")
     parser.add_argument("--run-class", nargs="+", default=None,
                         metavar="RUN_ID=CLASS",
                         help="label a stored run whose measurements predate the "
@@ -602,6 +643,10 @@ def main(argv: list[str] | None = None) -> int:
 
     config = load_config(Path(args.config) if args.config else None)
     db = Database(Path(args.db) if args.db else config.db_path)
+
+    if args.list_runs:
+        print(describe_runs(db))
+        return 0
 
     if args.all_runs:
         run_ids = all_run_ids(db)
