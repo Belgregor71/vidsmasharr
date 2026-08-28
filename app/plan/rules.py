@@ -108,6 +108,46 @@ class FileFacts:
         )
 
 
+    @classmethod
+    def from_media_info(
+        cls,
+        info,
+        *,
+        content_class: str = "tv",
+        title_id: int | None = None,
+        in_open_duplicate_group: bool = False,
+    ) -> "FileFacts":
+        """Build from a fresh ffprobe rather than from the database row.
+
+        The worker re-probes immediately before touching a file, so protection
+        and policy are re-checked against what is on disk *now* rather than
+        against facts that may be days old. An *arr upgrade that replaced an
+        SDR file with an HDR one between planning and encoding is exactly the
+        case this exists for.
+        """
+        from dataclasses import asdict
+
+        return cls(
+            file_id=0,
+            path=info.path,
+            size_bytes=info.size_bytes,
+            duration_s=info.duration_s,
+            container=info.container,
+            v_codec=info.v_codec,
+            v_bit_depth=info.v_bit_depth,
+            v_width=info.v_width,
+            v_height=info.v_height,
+            v_bitrate=info.v_bitrate,
+            v_fps=info.v_fps,
+            hdr_type=info.hdr_type,
+            audio=[asdict(track) for track in info.audio],
+            subs=[asdict(track) for track in info.subs],
+            content_class=content_class,
+            title_id=title_id,
+            in_open_duplicate_group=in_open_duplicate_group,
+        )
+
+
 @dataclass
 class PlannedDecision:
     file_id: int

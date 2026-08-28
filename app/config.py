@@ -37,6 +37,15 @@ class ArrConfig(BaseModel):
     path_map: dict[str, str] = Field(default_factory=dict)
 
 
+class TautulliConfig(BaseModel):
+    """Asked before Plex for "is anyone watching?" -- one small JSON call, and
+    it does not need the Plex token."""
+    enabled: bool = False
+    url: str = ""
+    api_key: str = ""
+    timeout: float = 15.0
+
+
 class ScheduleConfig(BaseModel):
     # Full-speed window. Local time, HH:MM. Wraps past midnight.
     night_start: str = "23:00"
@@ -131,6 +140,7 @@ class Config(BaseModel):
     config_dir: Path = Path("/config")
 
     plex: PlexConfig = Field(default_factory=PlexConfig)
+    tautulli: TautulliConfig = Field(default_factory=TautulliConfig)
     sonarr: ArrConfig = Field(default_factory=ArrConfig)
     radarr: ArrConfig = Field(default_factory=ArrConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)

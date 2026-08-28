@@ -8,6 +8,7 @@ is on a home LAN and the CDN may or may not be reachable.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -39,8 +40,22 @@ def human_duration(seconds: float | None) -> str:
     return f"{minutes // 60}h {minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
 
 
+def human_since(timestamp: float | None) -> str:
+    """How long ago, for a page that is mostly watched while something runs."""
+    if not timestamp:
+        return "-"
+    seconds = max(0.0, time.time() - timestamp)
+    if seconds < 90:
+        return f"{seconds:.0f}s ago"
+    minutes = seconds / 60
+    if minutes < 90:
+        return f"{minutes:.0f}m ago"
+    return f"{minutes / 60:.1f}h ago"
+
+
 TEMPLATES.env.filters["bytes"] = human_bytes
 TEMPLATES.env.filters["duration"] = human_duration
+TEMPLATES.env.filters["since"] = human_since
 
 
 def create_app(config: Config | None = None, db: Database | None = None) -> FastAPI:

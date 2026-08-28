@@ -186,3 +186,56 @@ class TestPlanPage:
 
         response = client.get("/plan")
         assert "Provisional" in response.text
+
+
+class TestActivityPage:
+    def test_an_empty_activity_page_explains_how_to_start(self, client):
+        response = client.get("/activity")
+        assert response.status_code == 200
+        assert "app work" in response.text
+
+    def test_completed_work_shows_actual_against_predicted(self, client, db):
+        now = time.time()
+        db.execute(
+            "INSERT INTO media_file (path, library_root, size_bytes, mtime, "
+            "first_seen, last_seen) VALUES ('/media/tv/show.mkv','/media/tv',?,?,?,?)",
+            (4 * GB, now, now, now),
+        )
+        file_id = db.scalar("SELECT last_insert_rowid()")
+        db.execute(
+            "INSERT INTO decision (file_id, action, reason, state, created_at) "
+            "VALUES (?, 'encode', 'because', 'done', ?)",
+            (file_id, now),
+        )
+        decision_id = db.scalar("SELECT last_insert_rowid()")
+        db.execute(
+            "INSERT INTO job (decision_id, state, attempts) VALUES (?,'done',1)",
+            (decision_id,),
+        )
+        job_id = db.scalar("SELECT last_insert_rowid()")
+        db.execute(
+            "INSERT INTO outcome (job_id, file_path, action, before_bytes, "
+            "after_bytes, saved_bytes, est_saved_bytes, cpu_seconds, vmaf_mean, "
+            "original_deleted, completed_at) "
+            "VALUES (?, '/media/tv/show.mkv', 'encode', ?, ?, ?, ?, 2400, 94.6, 1, ?)",
+            (job_id, 4 * GB, 1 * GB, 3 * GB, 2 * GB, time.time()),
+        )
+
+        response = client.get("/activity")
+        assert "show.mkv" in response.text
+        assert "94.6" in response.text
+        assert "deleted" in response.text
+
+    def test_the_header_banner_tells_the_truth_about_deletion(self, db, tmp_path):
+        from fastapi.testclient import TestClient
+        from app.web.app import create_app
+
+        config = Config(config_dir=tmp_path)
+        config.safety.dry_run = False
+        config.safety.delete_original_on_success = True
+        client = TestClient(create_app(config=config, db=db))
+
+        assert "originals are deleted" in client.get("/").text
+
+    def test_the_banner_says_dry_run_by_default(self, client):
+        assert "nothing is encoded or deleted" in client.get("/").text

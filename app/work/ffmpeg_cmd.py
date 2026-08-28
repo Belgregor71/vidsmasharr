@@ -154,6 +154,29 @@ def build_encode_command(
     return cmd
 
 
+def build_remux_command(
+    *,
+    ffmpeg: str,
+    source: Path | str,
+    dest: Path | str,
+    audio_args: list[str],
+) -> list[str]:
+    """Rewrite the container without touching the video.
+
+    The video stream is copied bit for bit, so there is no quality question to
+    answer afterwards and no VMAF pass to run. All the saving comes from the
+    tracks that are not mapped.
+    """
+    return [
+        ffmpeg, "-hide_banner", "-nostdin", "-y",
+        "-i", str(source),
+        "-map", "0:v:0", "-c:v", "copy",
+        *audio_args,
+        "-map_metadata", "0", "-map_chapters", "0",
+        str(dest),
+    ]
+
+
 def build_vmaf_command(
     *,
     ffmpeg: str,
@@ -162,12 +185,20 @@ def build_vmaf_command(
     log_path: Path | str,
     threads: int = 2,
     reference_height: int | None = None,
+    start_s: float | None = None,
+    duration_s: float | None = None,
 ) -> list[str]:
     """Score `distorted` against `reference`.
 
     When the encode downscaled, the distorted stream is scaled back up to the
     reference resolution before comparison. That is the meaningful question for
     us: how does the smaller file look on a TV that will upscale it anyway.
+
+    `start_s` and `duration_s` score one segment instead of the whole file,
+    which is how verification works in production: three 20-second samples of a
+    45-minute episode answer the question in a minute rather than an hour. The
+    seek goes before each -i so ffmpeg seeks rather than decoding and
+    discarding, and both inputs get the same seek so the streams stay aligned.
     """
     scale = ""
     if reference_height:
@@ -183,10 +214,16 @@ def build_vmaf_command(
         f"[dist][ref]libvmaf=log_fmt=json:log_path={_escape_filter_path(log_path)}"
         f":n_threads={threads}"
     )
+    seek: list[str] = []
+    if start_s is not None:
+        seek += ["-ss", f"{start_s:.3f}"]
+    if duration_s is not None:
+        seek += ["-t", f"{duration_s:.3f}"]
+
     return [
         ffmpeg, "-hide_banner", "-nostdin",
-        "-i", str(distorted),
-        "-i", str(reference),
+        *seek, "-i", str(distorted),
+        *seek, "-i", str(reference),
         "-lavfi", graph,
         "-f", "null", "-",
     ]

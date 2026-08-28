@@ -41,11 +41,12 @@ costs some savings on one file; a false negative destroys it.
 | 0 | Capability detection, benchmark, quality ladder | Done |
 | 1 | Scan, identify via Plex/*arr, duplicate report + UI | Done |
 | 2 | Decision engine, planner, dry-run plan | Built |
-| 3 | Encode pipeline, verification, atomic swap, scheduler | Not started |
+| 3 | Encode pipeline, verification, atomic swap, scheduler | Built |
 | 4 | *arr profile guard, estimator calibration, x265 keepers | Not started |
 
-Nothing in the current code modifies your media library. Phases 0 to 2 only
-read files, and write to a scratch directory and the SQLite database.
+Phases 0 to 2 only read your media. Phase 3 is the one that writes: it can
+replace a file and delete the original, and it ships with both of its safety
+switches in the off position (`dry_run` on, `delete_original_on_success` off).
 
 ## Phase 0: run this first
 
@@ -208,9 +209,90 @@ the Phase 3 worker will refuse to execute.
 
 The plan is visible at **http://&lt;nas&gt;:8330/plan**.
 
+## Phase 3: doing the work
+
+This is the phase that can lose data, so it is the phase with the most gates.
+
+```sh
+docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work
+```
+
+It takes the best pending decision, encodes it into `/scratch`, verifies the
+result, and only then installs it. The original is untouched until the moment
+it is replaced.
+
+### The order of the checks is the design
+
+1. **Is this still the file we planned for?** Size and mtime are compared
+   against the database and the file is re-probed. A plan can be days old.
+2. **Is it still allowed?** The protection rule is re-evaluated against the
+   *fresh* probe, never trusted from the decision row. If an *arr upgrade
+   replaced an SDR release with an HDR one since planning, this is what
+   catches it before the grade gets flattened to 8-bit.
+3. **Is there room?** The library volume stays above `min_free_bytes`, and
+   scratch must hold the output with headroom.
+4. **Encode**, into scratch.
+5. **Verify.** Structure always: does it probe, is it the right length, does it
+   still have video and audio, is it actually smaller. Then sampled VMAF for
+   anything re-encoded — three 20-second samples, and *every* sample has to
+   clear the bar, not the average of them. A remux skips VMAF because the video
+   stream was copied bit for bit.
+6. **Install**, and only then delete.
+
+A verification that cannot run is a failure, not a pass. If libvmaf is missing,
+nothing gets deleted.
+
+### Two switches, and they do different things
+
+| Setting | Effect |
+|---|---|
+| `safety.dry_run` (default **true**) | Prints the commands and changes nothing at all |
+| `safety.delete_original_on_success` (default **false**) | Whether a verified output ever replaces its source |
+
+`app work --execute` overrides `dry_run`, so a run can be started without
+editing config.yaml on a NAS with no git. It deliberately does **not** override
+`delete_original_on_success`: starting work is a command you can type,
+authorising deletion stays an edit to the config file.
+
+### The trial batch
+
+With deletion off, verified outputs stay in `/scratch/encoding` and the library
+is not touched. Copy a couple onto each TV, confirm they direct-play and look
+right, then turn `delete_original_on_success` on and run:
+
+```sh
+docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work --install-held
+```
+
+That installs what is already encoded rather than spending those hours again.
+
+### Scheduling
+
+Overnight the worker runs at full width; during the day it keeps going on one
+thread and niced, unless `day_enabled` is off. Either way it stops while
+anyone is streaming — Tautulli is asked first, Plex second, and *being unable
+to ask counts as "someone is watching"*. The box has one video engine, and a
+stuttering film is the fastest way for this project to be uninstalled.
+
+### When something fails
+
+The output is moved to `/scratch/quarantine` with the reason in a `.txt` beside
+it, and the decision is marked `failed` so the worker moves on. Failed
+decisions survive re-planning on purpose — a file that failed verification
+should not quietly climb back up a queue that is months long. Put them back
+deliberately:
+
+```sh
+docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work --retry-failed
+```
+
+Progress and history are at **http://&lt;nas&gt;:8330/activity**, including how
+the actual savings compare with what the planner predicted.
+
 ## Safety model
 
-Enforced across the project, and the parts that exist already respect it:
+Enforced across the project, and now actually implemented by the Phase 3
+worker rather than merely promised:
 
 1. Encoding happens in `/scratch`, never in place.
 2. An original is deleted only after verification passes **and** the atomic
@@ -229,9 +311,10 @@ python -m venv .venv
 ./.venv/Scripts/python -m pytest tests/ -q
 ```
 
-The test suite covers the two things most expensive to get wrong: HDR
-detection (`tests/test_probe_hdr.py`) and quality-ladder interpolation
-(`tests/test_ladder.py`).
+The test suite concentrates on the things most expensive to get wrong: HDR
+detection (`tests/test_probe_hdr.py`), quality-ladder interpolation
+(`tests/test_ladder.py`), the planning rules (`tests/test_plan.py`), and
+everything that can delete or replace a file (`tests/test_work.py`).
 
 You can exercise the whole Phase 0 pipeline on a workstation without any
 Intel GPU:
@@ -245,7 +328,7 @@ python -m bench --libraries /path/to/media --allow-software-only \
 
 ```
 app/
-  cli.py               `app scan|identify|duplicates|phase1|plan|status|serve`
+  cli.py               `app scan|identify|duplicates|phase1|plan|work|status|serve`
   config.py            YAML + env config, safe defaults
   db.py                SQLite schema and migrations
   scan/probe.py        ffprobe -> normalised facts, HDR detection
@@ -260,8 +343,15 @@ app/
   plan/estimate.py     predicted output size and encode time
   plan/profiles.py     the quality ladder as production reads it
   plan/planner.py      rank every file into a queue; write decisions
-  web/                 FastAPI + Jinja2 UI: overview, duplicates, plan, library
+  web/                 FastAPI + Jinja2 UI: overview, duplicates, plan,
+                       activity, library
   work/ffmpeg_cmd.py   encode + VMAF command construction
+  work/streams.py      which audio and subtitle tracks survive
+  work/vmaf.py         run libvmaf, read the score back
+  work/verify.py       is this output safe to replace the original with?
+  work/swap.py         atomic install and delete  [the only deleting code]
+  work/schedule.py     night/day windows, pause while anyone is streaming
+  work/worker.py       the loop, and every safety gate in it
 bench/
   capability.py        what this box can actually do
   runner.py            clip extraction, encode matrix, VMAF scoring

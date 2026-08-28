@@ -7,6 +7,7 @@ The container's ENTRYPOINT is `python3 -m`, so on the NAS these read as:
     docker compose ... run --rm vidsmasharr app duplicates
     docker compose ... run --rm vidsmasharr app phase1     (all three, in order)
     docker compose ... run --rm vidsmasharr app plan
+    docker compose ... run --rm vidsmasharr app work
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from app.identity import resolve
 from app.plan import planner
 from app.plan.profiles import resolve_ladder
 from app.scan import index
+from app.work import schedule, worker
 from app.scan.walker import diagnose_roots
 
 GB = 1024**3
@@ -180,6 +182,58 @@ def cmd_plan(args) -> int:
     return 0
 
 
+def cmd_work(args) -> int:
+    config, db = _load(args)
+    _header("WORK  encode, verify, and replace")
+
+    if args.retry_failed:
+        count = worker.retry_failed(db)
+        print(f"  {count} failed decision(s) put back in the queue.\n")
+
+    if args.install_held:
+        stats = worker.install_held(db, config)
+        print(stats.summary())
+        return 0 if not stats.failed else 1
+
+    pending = db.scalar("SELECT COUNT(*) FROM decision WHERE state='pending'") or 0
+    if not pending:
+        held = db.scalar("SELECT COUNT(*) FROM decision WHERE state='held'") or 0
+        print("Nothing pending. Run `app plan` first.")
+        if held:
+            print(f"\n  {held} output(s) are encoded and waiting in scratch. Turn on\n"
+                  "  safety.delete_original_on_success and run `app work "
+                  "--install-held`\n  to install them without re-encoding.")
+        return 2
+
+    dry_run = config.safety.dry_run and not args.execute
+    if dry_run:
+        print("  DRY RUN -- printing commands, changing nothing.")
+        print("  Pass --execute to really encode.\n")
+    else:
+        if config.safety.delete_original_on_success:
+            print("  Originals WILL be deleted after verification passes.\n")
+        else:
+            print("  Originals will be kept; outputs stay in scratch for review.")
+            print("  Turn on safety.delete_original_on_success when you are happy.\n")
+
+    window = schedule.may_work_now(config)
+    if not window.working and not args.now:
+        print(f"  Not working right now: {window.reason}.")
+        print("  Pass --now to override the schedule.")
+        return 0
+
+    stats = worker.run(
+        db, config,
+        limit=args.limit,
+        execute=args.execute,
+        ignore_schedule=args.now,
+        progress=print,
+    )
+    print()
+    print(stats.summary())
+    return 0 if stats.failed == 0 else 1
+
+
 def cmd_phase1(args) -> int:
     for step in (cmd_scan, cmd_identify, cmd_duplicates):
         code = step(args)
@@ -288,6 +342,21 @@ def build_parser() -> argparse.ArgumentParser:
                       help="plan without a calibrated ladder; estimates are guesses "
                            "and the decisions are not executable")
     plan.set_defaults(func=cmd_plan)
+
+    work = sub.add_parser("work", parents=[common],
+                          help="encode, verify and replace the planned files")
+    work.add_argument("--limit", type=int, default=None,
+                      help="stop after N files")
+    work.add_argument("--execute", action="store_true",
+                      help="override safety.dry_run and really encode. Does NOT "
+                           "override delete_original_on_success")
+    work.add_argument("--now", action="store_true",
+                      help="ignore the schedule window (still pauses for streams)")
+    work.add_argument("--retry-failed", action="store_true",
+                      help="put previously failed decisions back in the queue")
+    work.add_argument("--install-held", action="store_true",
+                      help="install outputs already encoded and verified in scratch")
+    work.set_defaults(func=cmd_work)
 
     status = sub.add_parser("status", parents=[common],
                             help="what the database currently knows")

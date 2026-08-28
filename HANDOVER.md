@@ -22,8 +22,10 @@ decides everything.
 
 - Repo: https://github.com/Belgregor71/vidsmasharr (public)
 - `main`, local and remote in sync
-- 161 tests passing (Phase 1 added 72, Phase 2 added 45)
-- Nothing has touched the media library. Phase 0 only reads and writes scratch.
+- 221 tests passing (Phase 1 added 72, Phase 2 added 45, Phase 3 added 60)
+- **Nothing has touched the media library yet.** Phase 3 now *can* -- it is
+  the first code that deletes -- but it ships with `dry_run` on and
+  `delete_original_on_success` off, and has never been run for real.
 
 ## Container status: VERIFIED WORKING (2026-08-28)
 
@@ -200,8 +202,8 @@ disagreement is "protected". A test covers exactly this case. **Do not
 ```
 app/config.py          YAML + env config. Safe defaults: dry_run=true,
                        delete_original_on_success=false
-app/db.py              SQLite schema, 5 migrations, WAL
-app/cli.py             app scan|identify|duplicates|phase1|status|serve
+app/db.py              SQLite schema, 6 migrations, WAL
+app/cli.py             app scan|identify|duplicates|phase1|plan|work|status|serve
 app/scan/probe.py      ffprobe -> normalised facts + HDR detection  [CRITICAL]
 app/scan/walker.py     library traversal, skip-dirs, reservoir sampling
 app/scan/index.py      incremental sync + probe queue, unmounted-share guard
@@ -210,20 +212,30 @@ app/identity/arr.py    Sonarr/Radarr read-only clients
 app/identity/filename.py  fallback parsing, never full confidence
 app/identity/resolve.py   merges sources; prevents title splitting
 app/dedupe/groups.py   duplicate grouping + keeper ranking (report only)
+app/plan/rules.py      what to do with one file, and why       [CRITICAL]
+app/plan/estimate.py   predicted output size and encode time
+app/plan/profiles.py   profiles.yaml as production reads it
+app/plan/planner.py    rank everything into a queue, write decisions
 app/web/               FastAPI + Jinja2 UI on :8330
 app/work/ffmpeg_cmd.py encode + VMAF command construction
+app/work/streams.py    which audio and subtitle tracks survive
+app/work/vmaf.py       run libvmaf, read the score back
+app/work/verify.py     is this output safe to replace the original with?
+app/work/swap.py       atomic install + delete      [the only deleting code]
+app/work/schedule.py   night/day windows, pause while anyone is streaming
+app/work/worker.py     the loop, and every safety gate in it
 bench/capability.py    verifies encoders by real 1-second encodes
 bench/runner.py        clip extraction, encode matrix, VMAF, decode-mode probe
 bench/ladder.py        interpolates settings hitting VMAF targets -> profiles.yaml
 bench/__main__.py      the 5-step Phase 0 run
 docker/                two-ffmpeg image + DSM compose
-tests/                 116 tests
+tests/                 221 tests
 ```
 
-**Phases 1 and 2 are built** (2026-08-28) and run end to end on synthetic
-data, but neither has been **run against the real library** -- that needs the
-NAS. Phases 3-4 (encode pipeline, *arr guard) are not started. See `README.md`
-for the phase table.
+**Phases 1, 2 and 3 are built** (2026-08-28) and run end to end on synthetic
+data, but none has been **run against the real library** -- that needs the NAS.
+Phase 4 (*arr guard, estimator calibration, x265 keepers) is not started. See
+`README.md` for the phase table.
 
 ### Phase 1 decisions worth not re-litigating
 
@@ -313,6 +325,77 @@ run that is already hours in.
 
 ---
 
+## Session 3, part 2 (2026-08-28): Phase 3 built
+
+Also built while the calibration ran. 221 tests pass (Phase 3 added 60).
+**This is the first code in the project that can delete a file**, so both of
+its safety switches ship off and every gate fails closed.
+
+```
+app/work/streams.py    which audio and subtitle tracks survive
+app/work/vmaf.py       run libvmaf and read the score back
+app/work/verify.py     is this output safe to replace the original with?
+app/work/swap.py       atomic install and delete   [the only deleting code]
+app/work/schedule.py   night/day windows, pause while anyone is streaming
+app/work/worker.py     the loop, and every safety gate in it
+app/cli.py             + `app work [--execute] [--limit N] [--now]
+                              [--retry-failed] [--install-held]`
+app/web/               + the /activity page
+```
+
+### Phase 3 decisions worth not re-litigating
+
+- **Protection is re-checked at encode time against a fresh probe**, never
+  trusted from the decision row, and the file's size and mtime are compared
+  with the database first. A plan can be days old; an *arr upgrade that swapped
+  an SDR release for an HDR one in between must not be encoded against stale
+  facts. There is a test for exactly this: database says SDR, disk says HDR,
+  disk wins.
+- **Every VMAF sample must clear the bar, not their average.** Averaging would
+  let one badly handled scene hide behind two easy ones, and that scene is the
+  entire reason to check.
+- **A verification that could not run is a failure.** No libvmaf, no readable
+  output, no measurable duration -- all of them refuse the delete. The cost of
+  a false "no" is one wasted encode; the cost of a false "yes" is a file that
+  is gone.
+- **A remux skips VMAF entirely.** The video stream is copied bit for bit, so
+  there is nothing to score, and scoring it would add hours to the cheapest
+  wins in the queue.
+- **`--execute` overrides `dry_run` but never `delete_original_on_success`.**
+  Starting work is a command you can type; authorising deletion stays a
+  deliberate edit to config.yaml. This matters more than usual here because the
+  NAS has no git and editing config is awkward -- see trap 6.
+- **With deletion off, verified outputs are `held`, not `done`.** They sit in
+  `/scratch/encoding` for the trial batch. Turning deletion on later and
+  running `app work --install-held` installs them rather than spending those
+  hours again. Marking them `done` would have quietly thrown that work away.
+- **Being unable to ask whether anyone is streaming counts as "yes".** One
+  video engine on the box; a stuttering film is the fastest route to this
+  project being uninstalled, and the queue is months long either way, so an
+  hour of caution costs nothing.
+- **Failed decisions stick; stale plans do not.** A real failure (encode died,
+  verification refused) stays `failed` and survives re-planning, so a bad file
+  cannot climb back up a months-long queue -- `--retry-failed` clears them
+  deliberately. A stale plan (file moved, changed, turned out protected) goes
+  back to `skipped`, which the planner regenerates with fresh facts.
+- **The install never leaves a moment with no file.** Copy to a temp file
+  beside the target, fsync, check the size landed, `os.replace` (atomic within
+  a directory), then delete the original only if the extension changed. A
+  `.avi` becoming a `.mkv` has a window where both exist, which is the correct
+  direction for that window to point.
+- **The web header banner now reads from the config** instead of promising
+  "nothing is deleted". A stale reassurance in the header would be worse than
+  no banner.
+
+### Still not verified on real hardware
+
+Everything above passes on synthetic data with ffmpeg mocked out. **No real
+encode has been run through this pipeline yet.** The first one should be a
+`--limit 1` dry run, then a `--limit 1 --execute` with deletion still off, and
+then a look at what lands in `/scratch/encoding`.
+
+---
+
 ## Next steps, in order
 
 1. ~~Rebuild and confirm libvmaf.~~ **Done 2026-08-28.**
@@ -342,9 +425,20 @@ run that is already hours in.
    shape of the plan anyway, in a state Phase 3 cannot execute. Run
    `app duplicates` first -- files in an unresolved duplicate group are
    deliberately held out of the queue.
-6. **Phase 3**: the encode pipeline. Read `pending` decisions, encode in
-   scratch, verify with sampled VMAF, atomic swap, then delete. Everything it
-   needs is already on the decision row in `detail_json`.
+6. **Run one real encode.** Phase 3 is built but has never met real media.
+   Work up to it in three steps, checking the output at each:
+   ```sh
+   sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work --limit 1
+   sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work --limit 1 --execute
+   ```
+   The first prints the ffmpeg command it would run. The second really encodes,
+   verifies, and leaves the output in `/scratch/encoding` -- `delete_original_on_success`
+   is off, so the library is untouched. Watch that file on both TVs before
+   going any further. Then turn deletion on in `config.yaml` and use
+   `app work --install-held` so the encode is not repeated.
+7. **Phase 4**: the *arr guard (custom formats so HEVC is never an upgrade
+   candidate, with a dry-run diff first), estimator calibration against the
+   `outcome` table, and the x265 keepers list.
 
 Steps 4 and 5 both need Phase 1 to have run on the real library first:
 

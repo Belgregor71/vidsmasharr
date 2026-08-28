@@ -8,18 +8,17 @@ them by encoding real clips from the real library.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import time
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.db import Database
 from app.plan.rules import EFFICIENT_CODECS, MIN_ENCODE_BITRATE
 from app.scan.probe import MediaInfo, probe
-from app.work.ffmpeg_cmd import QUALITY_FLAG, VideoSpec, build_encode_command, build_vmaf_command
+from app.work import vmaf
+from app.work.ffmpeg_cmd import QUALITY_FLAG, VideoSpec, build_encode_command
 
 
 @dataclass
@@ -185,55 +184,17 @@ def score_vmaf(
     distorted: Path, reference: Path, *, ffmpeg: str, work_dir: Path,
     reference_height: int | None = None, threads: int = 2, timeout: int = 3600,
 ) -> tuple[float | None, float | None, float | None, str | None]:
-    log_name = f"vmaf_{uuid.uuid4().hex[:8]}.json"
-    log_path = work_dir / log_name
-    # Bare filename in the filtergraph + cwd on the process: see the note in
-    # build_vmaf_command. Absolute paths break filter parsing.
-    cmd = build_vmaf_command(
-        ffmpeg=ffmpeg, distorted=distorted.resolve(), reference=reference.resolve(),
-        log_path=log_name, threads=threads, reference_height=reference_height,
+    """Whole-file score, as a plain tuple. See app/work/vmaf.py for the work.
+
+    Production verification and the benchmark must ask this question in exactly
+    the same way, so the implementation lives with the worker and this is a
+    thin adapter.
+    """
+    result = vmaf.score(
+        distorted, reference, ffmpeg=ffmpeg, work_dir=work_dir,
+        reference_height=reference_height, threads=threads, timeout=timeout,
     )
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True,
-                                timeout=timeout, check=False, cwd=work_dir)
-    except subprocess.SubprocessError as exc:
-        return None, None, None, f"vmaf run failed: {exc}"
-
-    if not log_path.exists():
-        tail = " | ".join((result.stderr or "").strip().splitlines()[-3:])
-        return None, None, None, f"vmaf produced no log: {tail[:300]}"
-
-    try:
-        data = json.loads(log_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return None, None, None, f"vmaf log unreadable: {exc}"
-    finally:
-        log_path.unlink(missing_ok=True)
-
-    pooled = (data.get("pooled_metrics") or {}).get("vmaf") or {}
-    mean = pooled.get("mean")
-    minimum = pooled.get("min")
-
-    # The 1st percentile is a better proxy for "will I notice" than the mean:
-    # a single bad scene drags perception down more than a good average lifts it.
-    p1 = None
-    frames = data.get("frames") or []
-    if frames:
-        scores = sorted(f.get("metrics", {}).get("vmaf", 0.0) for f in frames)
-        # Genuine 1st percentile. Note this is only meaningful with a few
-        # hundred frames or more; on a short clip it collapses toward the
-        # single worst frame, which is why the ladder calibrates on the mean
-        # and treats this as a warning signal only.
-        index = min(len(scores) - 1, max(0, round(len(scores) * 0.01)))
-        p1 = scores[index]
-        if mean is None:
-            mean = sum(scores) / len(scores)
-        if minimum is None:
-            minimum = scores[0]
-    return mean, minimum, p1, None
-
-
-# ------------------------------------------------------------------ matrix
+    return result.mean, result.min, result.p1, result.error
 
 
 def measure(

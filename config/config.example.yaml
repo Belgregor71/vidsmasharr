@@ -23,6 +23,13 @@ plex:
   path_map:
     "/volume1/data/media": "/media"
 
+# Asked before Plex when deciding whether to pause for a live stream. Settings
+# -> Web Interface -> API in Tautulli.
+tautulli:
+  enabled: true
+  url: http://192.168.1.10:8181
+  api_key: ""
+
 sonarr:
   enabled: true
   url: http://192.168.1.10:8989

@@ -16,9 +16,10 @@
       <a href="/" class="{{ 'on' if nav == '/' }}">Overview</a>
       <a href="/duplicates" class="{{ 'on' if nav.startswith('/duplicates') }}">Duplicates</a>
       <a href="/plan" class="{{ 'on' if nav.startswith('/plan') }}">Plan</a>
+      <a href="/activity" class="{{ 'on' if nav.startswith('/activity') }}">Activity</a>
       <a href="/library" class="{{ 'on' if nav.startswith('/library') }}">Library</a>
     </nav>
-    <span class="safety">read-only &middot; nothing is deleted</span>
+    <span class="safety">{{ safety_note }}</span>
   </header>
   <main>
     {% block content %}{% endblock %}

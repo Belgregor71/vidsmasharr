@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Activity &middot; vidsmasharr{% endblock %}
+
+{% block content %}
+<h1>Activity</h1>
+<p class="note">
+  What the worker has done, and what it is doing now. Every completed job here
+  was structurally checked and, for anything re-encoded, scored against the
+  source before the original was touched.
+</p>
+
+<section class="tiles">
+  <div class="tile">
+    <span class="k">{{ totals.saved | bytes }}</span>
+    <span class="l">actually reclaimed</span>
+    <span class="s">{{ totals.n }} file(s) completed</span>
+  </div>
+  <div class="tile">
+    <span class="k">{{ (totals.cpu / 3600) | round(1) }}h</span>
+    <span class="l">spent encoding</span>
+    <span class="s">
+      {% if totals.cpu %}{{ (totals.saved / 1073741824 / (totals.cpu / 3600)) | round(1) }} GB per hour actual{% else %}nothing yet{% endif %}
+    </span>
+  </div>
+  <div class="tile{{ ' warn' if accuracy and accuracy.ratio > 1.3 }}">
+    <span class="k">{% if accuracy %}{{ accuracy.ratio | round(2) }}&times;{% else %}&mdash;{% endif %}</span>
+    <span class="l">estimate accuracy</span>
+    <span class="s">actual saving vs predicted</span>
+  </div>
+  <div class="tile{{ ' warn' if failed }}">
+    <span class="k">{{ failed }}</span>
+    <span class="l">failed</span>
+    <span class="s">{{ held }} held in scratch</span>
+  </div>
+</section>
+
+{% if running %}
+<h2>Running now</h2>
+<table>
+  <thead><tr><th>File</th><th>Action</th><th class="n">Progress</th><th class="n">Started</th></tr></thead>
+  <tbody>
+  {% for row in running %}
+    <tr>
+      <td>{{ row.path.rsplit('/', 1)[-1] }}<div class="path">{{ row.path }}</div></td>
+      <td><span class="tag act-{{ row.action }}">{{ row.action }}</span></td>
+      <td class="n">
+        <div class="bar"><span style="width: {{ (row.progress_pct or 0) | round }}%"></span></div>
+        {{ (row.progress_pct or 0) | round }}%
+      </td>
+      <td class="n muted">{{ row.started_at | since }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h2 style="margin-top:1.5rem">Completed</h2>
+{% if not outcomes %}
+  <div class="empty">
+    <p>Nothing has run yet. When a plan exists:</p>
+    <pre>docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work</pre>
+  </div>
+{% else %}
+<table>
+  <thead>
+    <tr>
+      <th>File</th><th>Action</th>
+      <th class="n">Before</th><th class="n">After</th><th class="n">Saved</th>
+      <th class="n">Predicted</th><th class="n">VMAF</th><th class="n">Time</th><th>Original</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in outcomes %}
+    <tr>
+      <td>{{ row.file_path.rsplit('/', 1)[-1] }}<div class="path">{{ row.file_path }}</div></td>
+      <td><span class="tag act-{{ row.action }}">{{ row.action }}</span></td>
+      <td class="n">{{ row.before_bytes | bytes }}</td>
+      <td class="n">{{ row.after_bytes | bytes }}</td>
+      <td class="n good">{{ row.saved_bytes | bytes }}</td>
+      <td class="n muted">{{ row.est_saved_bytes | bytes }}</td>
+      <td class="n">{% if row.vmaf_mean %}{{ row.vmaf_mean | round(1) }}{% else %}&mdash;{% endif %}</td>
+      <td class="n">{{ ((row.cpu_seconds or 0) / 3600) | round(1) }}h</td>
+      <td class="muted">{{ 'deleted' if row.original_deleted else 'kept' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if failures %}
+<h2 style="margin-top:1.5rem">Failed</h2>
+<p class="note">
+  These stay out of the queue until you put them back with
+  <code>app work --retry-failed</code>. Outputs that failed verification are kept
+  in <code>scratch/quarantine</code> with the reason beside them.
+</p>
+<table>
+  <thead><tr><th>File</th><th>Why</th></tr></thead>
+  <tbody>
+  {% for row in failures %}
+    <tr>
+      <td>{{ row.path.rsplit('/', 1)[-1] }}<div class="path">{{ row.path }}</div></td>
+      <td class="muted">{{ row.reason }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

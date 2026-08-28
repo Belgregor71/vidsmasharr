@@ -18,9 +18,24 @@ PAGE_SIZE = 100
 
 def _render(request: Request, template: str, **extra):
     # Starlette wants the request first; it injects it into the context itself.
-    context = {"nav": request.url.path}
+    context = {"nav": request.url.path, "safety_note": _safety_note(request)}
     context.update(extra)
     return request.app.state.templates.TemplateResponse(request, template, context)
+
+
+def _safety_note(request: Request) -> str:
+    """The header banner has to say what is actually true.
+
+    Through Phase 2 nothing could delete anything and the banner said so. Now
+    that the worker exists, a stale reassurance in the header is worse than no
+    banner at all.
+    """
+    safety = request.app.state.config.safety
+    if safety.dry_run:
+        return "dry run · nothing is encoded or deleted"
+    if not safety.delete_original_on_success:
+        return "encoding · originals are kept"
+    return "encoding · originals are deleted after verification"
 
 
 @router.get("/")
@@ -143,6 +158,50 @@ def plan(request: Request, page: int = 1):
         totals=totals, jobs=jobs, skips=totals["skips"], page=page, offset=offset,
         pages=max(1, (totals["queued"] + PAGE_SIZE - 1) // PAGE_SIZE),
         rate=(totals["saved"] / GB / hours) if hours else 0.0,
+    )
+
+
+@router.get("/activity")
+def activity(request: Request):
+    """What the worker has done. Read-only, like everything else here."""
+    db = request.app.state.db
+
+    totals = db.one(
+        "SELECT COUNT(*) n, COALESCE(SUM(saved_bytes),0) saved, "
+        "COALESCE(SUM(cpu_seconds),0) cpu, COALESCE(SUM(est_saved_bytes),0) est "
+        "FROM outcome"
+    )
+    outcomes = db.query(
+        "SELECT * FROM outcome ORDER BY completed_at DESC LIMIT ?", (PAGE_SIZE,)
+    )
+    running = db.query(
+        """
+        SELECT j.progress_pct, j.started_at, d.action, mf.path
+        FROM job j
+        JOIN decision d ON d.id = j.decision_id
+        JOIN media_file mf ON mf.id = d.file_id
+        WHERE j.state = 'running'
+        """
+    )
+    failures = db.query(
+        """
+        SELECT d.reason, mf.path FROM decision d
+        JOIN media_file mf ON mf.id = d.file_id
+        WHERE d.state = 'failed' ORDER BY d.priority DESC LIMIT 50
+        """
+    )
+
+    # How well the planner predicted. Above 1 means we saved more than promised.
+    accuracy = None
+    if totals["est"]:
+        accuracy = {"ratio": totals["saved"] / totals["est"]}
+
+    return _render(
+        request, "activity.html",
+        totals=totals, outcomes=outcomes, running=running, failures=failures,
+        accuracy=accuracy,
+        failed=len(failures),
+        held=db.scalar("SELECT COUNT(*) FROM decision WHERE state='held'") or 0,
     )
 
 
