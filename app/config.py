@@ -46,6 +46,35 @@ class TautulliConfig(BaseModel):
     timeout: float = 15.0
 
 
+class GuardConfig(BaseModel):
+    """The *arr guard: stop Sonarr and Radarr undoing every night of encoding.
+
+    Left to themselves the *arrs keep hunting for a "better" release of a file
+    they have already got, and a fresh H.264 download replaces -- and deletes --
+    the HEVC file we spent hours producing.
+
+    The lever is a custom format matching HEVC with a *positive* score. Sonarr
+    and Radarr compare a candidate release's custom-format score against the
+    score of the file already on disk, and reject anything that is not strictly
+    better at the same quality. A high score on the file we made is therefore
+    what protects it. A negative score would do the exact opposite -- it would
+    make every H.264 release an upgrade over our work.
+    """
+
+    format_name: str = "vidsmasharr HEVC"
+    # Matched against the release title, which is what an *arr scores a file
+    # by. Written for .NET's regex engine as well as Python's, because
+    # Sonarr runs it and we predict its result before writing anything:
+    # both understand (?i) and a word boundary.
+    match_regex: str = r"(?i)\b(?:[xh][\s._-]?265|hevc)\b"
+    # Well clear of any hand-tuned score in a real profile, so our format wins
+    # without needing to know what else the user scores.
+    score: int = 1000
+    # How many of the *arr's own files to sample when checking whether the
+    # format actually matches the files it is meant to protect.
+    sample_files: int = 200
+
+
 class ScheduleConfig(BaseModel):
     # Full-speed window. Local time, HH:MM. Wraps past midnight.
     night_start: str = "23:00"
@@ -144,6 +173,7 @@ class Config(BaseModel):
     sonarr: ArrConfig = Field(default_factory=ArrConfig)
     radarr: ArrConfig = Field(default_factory=ArrConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
+    guard: GuardConfig = Field(default_factory=GuardConfig)
     quality: QualityConfig = Field(default_factory=QualityConfig)
     encoder: EncoderConfig = Field(default_factory=EncoderConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)

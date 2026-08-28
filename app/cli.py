@@ -8,6 +8,8 @@ The container's ENTRYPOINT is `python3 -m`, so on the NAS these read as:
     docker compose ... run --rm vidsmasharr app phase1     (all three, in order)
     docker compose ... run --rm vidsmasharr app plan
     docker compose ... run --rm vidsmasharr app work
+    docker compose ... run --rm vidsmasharr app arr-guard
+    docker compose ... run --rm vidsmasharr app calibrate
 """
 
 from __future__ import annotations
@@ -19,8 +21,9 @@ from pathlib import Path
 from app.config import Config, load_config
 from app.db import Database
 from app.dedupe import groups
+from app.guard import arr_guard
 from app.identity import resolve
-from app.plan import planner
+from app.plan import calibrate, planner
 from app.plan.profiles import resolve_ladder
 from app.scan import index
 from app.work import schedule, worker
@@ -234,6 +237,103 @@ def cmd_work(args) -> int:
     return 0 if stats.failed == 0 else 1
 
 
+def cmd_arr_guard(args) -> int:
+    """Stop the *arrs replacing our HEVC files with fresh H.264 downloads.
+
+    Reads and reports by default. `--apply` is the only thing that writes, and
+    it writes to the user's own live media managers, so the diff comes first
+    every time -- there is no flag to skip it.
+    """
+    config, db = _load(args)
+    _header("ARR GUARD  stop Sonarr and Radarr undoing every night of encoding")
+
+    if args.revert:
+        print("  Putting back everything the guard has written.\n")
+        result = arr_guard.revert(db, config)
+        for error in result.errors:
+            print(f"    ! {error}")
+        print(f"\n  {result.applied} reverted, {result.failed} failed.")
+        return 0 if not result.failed else 1
+
+    services = args.services or ["sonarr", "radarr"]
+    plans = []
+    for service in services:
+        client = arr_guard.client_for(service, config)
+        if client is None:
+            print(f"  {service.upper()}\n    not configured; set url, api_key and "
+                  f"enabled: true in config.yaml\n")
+            continue
+        plans.append((client, arr_guard.plan(client, config.guard,
+                                             neutralise=args.neutralise)))
+
+    if not plans:
+        print("  Neither Sonarr nor Radarr is configured, so there is nothing "
+              "to guard.")
+        return 2
+
+    for _, result in plans:
+        print(arr_guard.render(result, verbose=args.verbose))
+        print()
+
+    changes = sum(len(result.changes) for _, result in plans)
+    unreachable = [r.service for _, r in plans if not r.reachable]
+
+    if not args.apply:
+        print("  Nothing has been written. This is a diff.")
+        if changes:
+            print("  Run again with --apply to make these changes.")
+        return 1 if unreachable else 0
+
+    if not changes:
+        print("  Nothing to write.")
+        return 0
+
+    print(f"  Applying {changes} change(s).\n")
+    failed = 0
+    for client, _ in plans:
+        result = arr_guard.apply(db, client, config.guard,
+                                 neutralise=args.neutralise, progress=print)
+        failed += result.failed
+        for error in result.errors:
+            print(f"    ! {error}")
+
+    print("\n  Written. `app arr-guard --revert` puts it all back.")
+    return 0 if not failed else 1
+
+
+def cmd_calibrate(args) -> int:
+    """Check the estimator against the jobs that have actually run."""
+    config, db = _load(args)
+    _header("CALIBRATE  what we predicted, against what happened")
+
+    if args.reset:
+        calibrate.clear(db)
+        print("  Calibration cleared. Estimates are back to the raw model.")
+        return 0
+
+    current = calibrate.load(db)
+    print(f"  in force   {calibrate.describe(current)}\n")
+
+    report = calibrate.measure(db, min_samples=args.min_samples)
+    print(report.summary())
+
+    if not args.apply:
+        print("\n  Nothing has changed. Pass --apply to correct the estimator,")
+        print("  then re-run `app plan` -- the queue order is what this is for.")
+        return 0
+
+    if report.calibration is None:
+        print(f"\n  Not enough measurements yet: a factor needs at least "
+              f"{args.min_samples} outcomes to be worth more than the noise in "
+              f"it. Run more jobs first.")
+        return 2
+
+    calibrate.save(db, report.calibration)
+    print("\n  Applied. Re-run `app plan` so the queue is re-ordered with it --")
+    print("  existing decisions keep the estimates they were written with.")
+    return 0
+
+
 def cmd_phase1(args) -> int:
     for step in (cmd_scan, cmd_identify, cmd_duplicates):
         code = step(args)
@@ -263,6 +363,14 @@ def cmd_status(args) -> int:
         "FROM duplicate_group WHERE status='open'"
     )
     print(f"  duplicates {dupes['n']} group(s), {dupes['b'] / GB:.1f} GB reclaimable")
+
+    print(f"  outcomes   {db.scalar('SELECT COUNT(*) FROM outcome') or 0} job(s) recorded")
+    print(f"  estimator  {calibrate.describe(calibrate.load(db))}")
+    guarded = db.scalar(
+        "SELECT COUNT(*) FROM guard_change WHERE reverted_at IS NULL"
+    ) or 0
+    print(f"  arr guard  {guarded} change(s) in force"
+          if guarded else "  arr guard  not installed -- run `app arr-guard`")
 
     if files:
         print("\n  codec mix (by bytes):")
@@ -357,6 +465,34 @@ def build_parser() -> argparse.ArgumentParser:
     work.add_argument("--install-held", action="store_true",
                       help="install outputs already encoded and verified in scratch")
     work.set_defaults(func=cmd_work)
+
+    guard = sub.add_parser(
+        "arr-guard", parents=[common],
+        help="stop Sonarr/Radarr replacing our HEVC files with H.264 downloads",
+    )
+    guard.add_argument("--apply", action="store_true",
+                       help="really write the changes to Sonarr and Radarr")
+    guard.add_argument("--revert", action="store_true",
+                       help="put back everything the guard has written")
+    guard.add_argument("--neutralise", action="store_true",
+                       help="also raise any existing negative HEVC score to 0. "
+                            "Those are the user's own tuning, so it is opt-in")
+    guard.add_argument("--services", nargs="*", choices=["sonarr", "radarr"],
+                       default=None, help="just one of them")
+    guard.set_defaults(func=cmd_arr_guard)
+
+    calibrate_cmd = sub.add_parser(
+        "calibrate", parents=[common],
+        help="correct the estimator against the jobs that have really run",
+    )
+    calibrate_cmd.add_argument("--apply", action="store_true",
+                               help="save the correction and use it when planning")
+    calibrate_cmd.add_argument("--reset", action="store_true",
+                               help="throw the correction away")
+    calibrate_cmd.add_argument("--min-samples", type=int,
+                               default=calibrate.MIN_SAMPLES,
+                               help="measurements needed before a factor is used")
+    calibrate_cmd.set_defaults(func=cmd_calibrate)
 
     status = sub.add_parser("status", parents=[common],
                             help="what the database currently knows")

@@ -226,6 +226,39 @@ class TestActivityPage:
         assert "94.6" in response.text
         assert "deleted" in response.text
 
+    def test_estimator_accuracy_is_broken_out_per_model(self, client, db):
+        """One aggregate number hides two models wrong in opposite directions,
+        and the queue is ordered by what they predict."""
+        now = time.time()
+        for _ in range(10):
+            db.execute(
+                "INSERT INTO outcome (job_id, file_path, action, before_bytes, "
+                "after_bytes, saved_bytes, est_saved_bytes, cpu_seconds, "
+                "est_cpu_seconds, est_out_bytes, estimate_basis, encoder, "
+                "resolution, original_deleted, completed_at) "
+                "VALUES (NULL, '/media/tv/show.mkv', 'encode', ?, ?, ?, ?, 3600, "
+                "3000, ?, 'ladder-bitrate', 'hevc_vaapi', '1080p', 1, ?)",
+                (4 * GB, 2 * GB, 2 * GB, 3 * GB, 1 * GB, now),
+            )
+
+        text = client.get("/activity").text
+        assert "ladder-bitrate" in text
+        assert "hevc_vaapi:1080p" in text
+        assert "app calibrate --apply" in text
+
+    def test_too_few_samples_are_shown_but_marked(self, client, db):
+        db.execute(
+            "INSERT INTO outcome (job_id, file_path, action, before_bytes, "
+            "after_bytes, saved_bytes, est_out_bytes, estimate_basis, "
+            "original_deleted, completed_at) "
+            "VALUES (NULL, '/media/tv/a.mkv', 'encode', ?, ?, ?, ?, "
+            "'ladder-ratio', 0, ?)",
+            (4 * GB, 3 * GB, 1 * GB, 1 * GB, time.time()),
+        )
+        text = client.get("/activity").text
+        assert "ladder-ratio" in text
+        assert "too few to act on" in text
+
     def test_the_header_banner_tells_the_truth_about_deletion(self, db, tmp_path):
         from fastapi.testclient import TestClient
         from app.web.app import create_app

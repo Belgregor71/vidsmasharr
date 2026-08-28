@@ -61,6 +61,9 @@ class FileFacts:
     title_id: int | None = None
     probed: bool = True
     in_open_duplicate_group: bool = False
+    # On the hand-written x265 keepers list. Costs hours instead of minutes, so
+    # nothing sets this except a path the user typed. See plan/keepers.py.
+    is_keeper: bool = False
 
     @property
     def tier(self) -> str:
@@ -79,6 +82,7 @@ class FileFacts:
         content_class: str = "tv",
         title_id: int | None = None,
         in_open_duplicate_group: bool = False,
+        is_keeper: bool = False,
     ) -> "FileFacts":
         def parse(column: str) -> list[dict]:
             try:
@@ -105,6 +109,7 @@ class FileFacts:
             title_id=title_id,
             probed=row["probe_version"] is not None,
             in_open_duplicate_group=in_open_duplicate_group,
+            is_keeper=is_keeper,
         )
 
 
@@ -250,12 +255,23 @@ def decide(facts: FileFacts, config, ladder, estimator) -> PlannedDecision:
         blocked = ladder.unusable_at(out_tier)
 
     rung = None
+    keeper_note = ""
     if not blocked:
-        rung = ladder.rung_for(facts.content_class, out_tier)
+        rung = ladder.rung_for(
+            facts.content_class, out_tier, prefer_software=facts.is_keeper
+        )
         if rung is None:
             blocked = (
                 f"no calibrated setting for {facts.content_class} at {out_tier}; "
                 f"benchmark some content of that kind"
+            )
+        elif facts.is_keeper:
+            keeper_note = (
+                " -- on the x265 keepers list"
+                if not rung.is_hardware
+                else " -- on the keepers list, but no software rung is "
+                     "calibrated for it, so this uses the hardware encoder. Run "
+                     "the benchmark with --include-software to get one"
             )
 
     if not blocked and rung is not None:
@@ -278,7 +294,7 @@ def decide(facts: FileFacts, config, ladder, estimator) -> PlannedDecision:
                 action=DOWNSCALE if target_height else ENCODE,
                 reason=(
                     f"{facts.v_codec} {facts.tier} -> hevc {out_tier}, "
-                    f"saving about {saved_pct:.0f}%"
+                    f"saving about {saved_pct:.0f}%{keeper_note}"
                 ),
                 profile=rung.label,
                 est_out_bytes=estimate.out_bytes,

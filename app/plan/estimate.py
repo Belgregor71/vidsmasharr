@@ -5,9 +5,10 @@ deliberately conservative: where two models disagree we take the one that
 promises *less* saving. Over-promising would push a file up a queue that is
 measured in months, ahead of one that really would have paid better.
 
-None of these numbers are exact and they are not meant to be. Phase 4 will
-close the loop by comparing them against the `outcome` table, which is why
-every estimate records the basis it was computed from.
+None of these numbers are exact and they are not meant to be. `plan/calibrate.py`
+closes the loop by comparing them against the `outcome` table, which is why
+every estimate records the basis it was computed from -- and why a corrected
+estimate says so, rather than quietly becoming the new raw model.
 
 A note on "cpu_seconds": for a hardware encode the work happens on the iGPU and
 barely touches the CPU. The field means *elapsed encode seconds* -- the scarce
@@ -246,7 +247,30 @@ def encode_seconds(facts: FileFacts, rung: Rung, target_height: int | None) -> f
 
 
 class Estimator:
-    """The default estimator. Injected into the rules so it can be stubbed."""
+    """The default estimator. Injected into the rules so it can be stubbed.
+
+    `calibration` is what Phase 4 learned from the jobs that have actually run
+    (see plan/calibrate.py). None means the raw model, which is what every plan
+    made before the first encode finished necessarily uses.
+    """
+
+    def __init__(self, calibration=None):
+        self.calibration = calibration
+
+    def _correct(
+        self, out_bytes: int, cpu_seconds: float, basis: str, speed_key: str
+    ) -> tuple[int, float, str]:
+        """Apply the measured corrections, and say in the basis that we did.
+
+        The suffix is not decoration. The next calibration groups by basis, so
+        a corrected estimate is measured as its own model and its factor
+        converges towards 1 instead of compounding on the one already applied.
+        """
+        if self.calibration is None:
+            return out_bytes, cpu_seconds, basis
+        size = self.calibration.size_factor(basis)
+        speed = self.calibration.speed_factor(speed_key)
+        return int(out_bytes * size), cpu_seconds * speed, f"{basis}+cal"
 
     def encode(
         self, facts: FileFacts, rung: Rung, target_height: int | None, config
@@ -256,6 +280,11 @@ class Estimator:
         audio_out, audio_dropped, detail = audio_bytes_after(facts, config.audio)
 
         out_bytes = int((video_out + audio_out) * CONTAINER_OVERHEAD)
+        cpu_seconds = encode_seconds(facts, rung, target_height)
+        out_tier = "1080p" if target_height == 1080 else facts.tier
+        out_bytes, cpu_seconds, basis = self._correct(
+            out_bytes, cpu_seconds, basis, f"{rung.encoder}:{out_tier}"
+        )
         # An encode can genuinely grow a file; the rules use the saving to
         # reject that, so it must be allowed to come out at or below zero.
         saved = facts.size_bytes - out_bytes
@@ -275,7 +304,7 @@ class Estimator:
         return Estimate(
             out_bytes=out_bytes,
             saved_bytes=max(saved, 0),
-            cpu_seconds=encode_seconds(facts, rung, target_height),
+            cpu_seconds=cpu_seconds,
             basis=basis,
             detail=detail,
         )
@@ -290,6 +319,11 @@ class Estimator:
         if detail.get("audio_transcode"):
             seconds += facts.duration_s / AUDIO_ENCODE_REALTIME
 
+        basis = "stream-copy"
+        out_bytes, seconds, basis = self._correct(
+            out_bytes, seconds, basis, f"remux:{facts.tier}"
+        )
+
         detail.update({
             "video_out_bytes": video,
             "audio_out_bytes": audio_out,
@@ -299,7 +333,7 @@ class Estimator:
             out_bytes=out_bytes,
             saved_bytes=max(facts.size_bytes - out_bytes, 0),
             cpu_seconds=seconds,
-            basis="stream-copy",
+            basis=basis,
             detail=detail,
         )
 

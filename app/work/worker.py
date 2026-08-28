@@ -35,7 +35,13 @@ from pathlib import Path
 
 from app.db import Database
 from app.plan.rules import DOWNSCALE, ENCODE, REMUX
-from app.scan.probe import PROBE_VERSION, MediaInfo, ProbeError, probe
+from app.scan.probe import (
+    PROBE_VERSION,
+    MediaInfo,
+    ProbeError,
+    probe,
+    resolution_tier,
+)
 from app.work import schedule, swap, verify
 from app.work.ffmpeg_cmd import (
     VideoSpec,
@@ -98,30 +104,48 @@ class WorkerStats:
 # ------------------------------------------------------------------ selection
 
 
-def next_decision(db: Database, exclude: set[int] | None = None):
+def next_decision(
+    db: Database, exclude: set[int] | None = None, *, allow_software: bool = True
+):
     """The best remaining job. Ordering was settled by the planner.
 
     `exclude` exists for dry runs: they change no state, so without it the same
     decision comes back every time and the loop never ends.
+
+    `allow_software` is off outside the night window. A keeper on libx265 is
+    six to ten hours; starting one at nine in the morning means it is still
+    running at teatime, on the one CPU the box has. Stepping over it and taking
+    the next hardware job keeps the daytime hour useful, and the keeper gets
+    picked up the same night. This is why `decision.encoder` is a column: the
+    query has to be able to ask.
     """
-    skip = ""
-    params: tuple = ()
+    clauses = ["d.state = 'pending'", "mf.missing = 0"]
+    params: list = []
     if exclude:
-        skip = f"AND d.id NOT IN ({','.join('?' * len(exclude))})"
-        params = tuple(exclude)
+        clauses.append(f"d.id NOT IN ({','.join('?' * len(exclude))})")
+        params.extend(exclude)
+    if not allow_software:
+        clauses.append("(d.encoder IS NULL OR d.encoder NOT LIKE 'lib%')")
     return db.one(
         f"""
         SELECT d.*, mf.path, mf.size_bytes, mf.mtime, mf.duration_s,
-               mf.v_height, mf.library_root, t.kind AS title_kind
+               mf.v_width, mf.v_height, mf.library_root, t.kind AS title_kind
         FROM decision d
         JOIN media_file mf ON mf.id = d.file_id
         LEFT JOIN title t ON t.id = d.title_id
-        WHERE d.state = 'pending' AND mf.missing = 0 {skip}
+        WHERE {' AND '.join(clauses)}
         ORDER BY d.priority DESC
         LIMIT 1
         """,
         params,
     )
+
+
+def pending_software(db: Database) -> int:
+    """Keepers waiting for a night window. Reported, never silently skipped."""
+    return db.scalar(
+        "SELECT COUNT(*) FROM decision WHERE state='pending' AND encoder LIKE 'lib%'"
+    ) or 0
 
 
 def _detail(row) -> dict:
@@ -453,7 +477,12 @@ def run(
 
     while limit is None or stats.attempted < limit:
         window = (
-            schedule.WorkWindow(True, config.schedule.night_threads, 0, "schedule ignored")
+            # --now is an explicit override of the schedule, so it overrides the
+            # night-only rule for software encodes too: you asked for full width.
+            schedule.WorkWindow(
+                True, config.schedule.night_threads, 0, "schedule ignored",
+                is_night=True,
+            )
             if ignore_schedule
             else schedule.may_work_now(config)
         )
@@ -468,9 +497,16 @@ def run(
             )
             break
 
-        row = next_decision(db, seen if dry_run else None)
+        row = next_decision(
+            db, seen if dry_run else None, allow_software=window.is_night
+        )
         if row is None:
-            stats.stopped_because = "nothing pending"
+            waiting = 0 if window.is_night else pending_software(db)
+            stats.stopped_because = (
+                f"nothing pending that can run now; {waiting} keeper(s) are "
+                f"waiting for the night window"
+                if waiting else "nothing pending"
+            )
             break
         if dry_run:
             seen.add(row["id"])
@@ -565,18 +601,55 @@ def _vmaf_json(verdict) -> str | None:
     })
 
 
+def _outcome_shape(row, info, detail: dict) -> tuple[str, str]:
+    """(content class, the resolution the encode actually ran at).
+
+    The output tier, not the source tier: a 4K file downscaled to 1080p is a
+    1080p encode and belongs with the other 1080p encodes when the estimator is
+    calibrated. Conflating the two is how the first benchmark projection came
+    out 1.75x optimistic.
+    """
+    kind = (row["title_kind"] or "").lower()
+    if kind == "movie":
+        content_class = "movie"
+    elif kind in ("show", "episode"):
+        content_class = "tv"
+    else:
+        content_class = (
+            "movie" if "movie" in (row["library_root"] or "").lower() else "tv"
+        )
+
+    if detail.get("target_height") == 1080:
+        resolution = "1080p"
+    else:
+        resolution = resolution_tier(info.v_width, info.v_height)
+    return content_class, resolution
+
+
 def _record_outcome(db: Database, job_id, row, info, verdict, installed, seconds) -> None:
+    """The permanent record of one job, and the raw material for calibration.
+
+    It carries the estimate beside the measurement and the model that produced
+    it, so `app calibrate` can correct each model separately. It also outlives
+    the decision, which the worker deletes on success -- that used to cascade
+    and take this row with it.
+    """
     out_bytes = verdict.out_info.size_bytes if verdict.out_info else 0
+    detail = _detail(row)
+    content_class, resolution = _outcome_shape(row, info, detail)
     db.execute(
         "INSERT INTO outcome (job_id, file_path, action, before_bytes, after_bytes, "
         " saved_bytes, est_saved_bytes, cpu_seconds, est_cpu_seconds, vmaf_min, "
-        " vmaf_mean, original_deleted, completed_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " vmaf_mean, original_deleted, completed_at, est_out_bytes, estimate_basis, "
+        " profile, encoder, content_class, resolution, duration_s) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             job_id, row["path"], row["action"], info.size_bytes, out_bytes,
             info.size_bytes - out_bytes, row["est_saved_bytes"], seconds,
             row["est_cpu_seconds"], verdict.vmaf_min, verdict.vmaf_mean,
             1 if installed.original_deleted else 0, time.time(),
+            row["est_out_bytes"], row["estimate_basis"], row["profile"],
+            detail.get("encoder"), content_class, resolution, info.duration_s,
         ),
     )
 
@@ -645,10 +718,12 @@ def install_held(db: Database, config, *, progress=print) -> WorkerStats:
 
     rows = db.query(
         """
-        SELECT d.*, mf.path, mf.size_bytes, j.scratch_path, j.id AS job_id
+        SELECT d.*, mf.path, mf.size_bytes, mf.library_root, j.scratch_path,
+               j.id AS job_id, t.kind AS title_kind
         FROM decision d
         JOIN media_file mf ON mf.id = d.file_id
         JOIN job j ON j.decision_id = d.id AND j.state = 'done'
+        LEFT JOIN title t ON t.id = d.title_id
         WHERE d.state = 'held'
         ORDER BY d.priority DESC
         """

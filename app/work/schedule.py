@@ -29,6 +29,10 @@ class WorkWindow:
     threads: int
     nice: int
     reason: str
+    # Software x265 is six to ten hours per film on this box. It runs at full
+    # width or not at all, so the keepers list is night work only -- during the
+    # day the worker steps over those jobs and takes the next hardware one.
+    is_night: bool = False
 
 
 def _parse(value: str) -> clock_time:
@@ -53,6 +57,7 @@ def window_for(now: datetime, schedule) -> WorkWindow:
         return WorkWindow(
             working=True, threads=schedule.night_threads, nice=0,
             reason=f"night window ({schedule.night_start}-{schedule.night_end})",
+            is_night=True,
         )
     if not schedule.day_enabled:
         return WorkWindow(

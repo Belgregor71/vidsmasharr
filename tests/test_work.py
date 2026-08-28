@@ -470,8 +470,10 @@ def seed_job(db, tmp_path, *, size=4096, hdr="sdr", action="encode"):
     file_id = db.scalar("SELECT last_insert_rowid()")
     db.execute(
         "INSERT INTO decision (file_id, action, profile, reason, est_out_bytes, "
-        "est_saved_bytes, est_cpu_seconds, priority, state, detail_json, created_at) "
-        "VALUES (?,?,'hevc_vaapi qp24','because',1000,3000,600,5.0,'pending',?,?)",
+        "est_saved_bytes, est_cpu_seconds, priority, state, detail_json, "
+        "estimate_basis, encoder, created_at) "
+        "VALUES (?,?,'hevc_vaapi qp24','because',1000,3000,600,5.0,'pending',?,"
+        "'ladder-bitrate','hevc_vaapi',?)",
         (file_id, action, '{"encoder": "hevc_vaapi", "quality": 24}', now),
     )
     return source, file_id, db.scalar("SELECT last_insert_rowid()")
@@ -627,6 +629,104 @@ class TestDryRun:
     def test_progress_reporting_is_asked_for_machine_readably(self):
         cmd = worker.with_progress(["ffmpeg", "-i", "a.mkv", "out.mkv"])
         assert cmd[:4] == ["ffmpeg", "-progress", "pipe:1", "-nostats"]
+
+
+class TestTheRecordItLeaves:
+    """A finished job has to leave behind enough to calibrate the estimator.
+
+    The worker deletes the decision the moment it replaces an original, and
+    `outcome` is the only permanent record of what that job cost and returned.
+    """
+
+    def succeed(self, db, config, tmp_path, monkeypatch, *, delete=True):
+        source, _, _ = seed_job(db, tmp_path)
+        config.safety.dry_run = False
+        config.safety.delete_original_on_success = delete
+
+        out_info = fake_info(size_bytes=1500, path=str(source))
+        monkeypatch.setattr(worker, "probe", lambda p, f: fake_info(path=str(source)))
+        monkeypatch.setattr(
+            worker, "_run_with_progress",
+            lambda cmd, timeout, nice=0, on_progress=None: (0, "", 1234.0),
+        )
+        monkeypatch.setattr(
+            verify, "check_structure",
+            lambda *a, **k: verify.Verification(ok=True, out_info=out_info),
+        )
+        monkeypatch.setattr(
+            verify, "check_quality",
+            lambda *a, **k: verify.Verification(
+                ok=True, vmaf_mean=94.5, vmaf_min=93.1, out_info=out_info
+            ),
+        )
+        monkeypatch.setattr(
+            swap, "install",
+            lambda dest, src, delete_original: swap.InstallResult(
+                ok=True, final_path=src, original_deleted=delete_original
+            ),
+        )
+        monkeypatch.setattr(worker, "_adopt_output", lambda *a, **k: None)
+
+        row = worker.next_decision(db)
+        window = schedule.WorkWindow(True, 4, 0, "test", is_night=True)
+        return worker.run_decision(
+            db, config, row, window=window, dry_run=False, progress=None
+        )
+
+    def test_the_outcome_carries_what_calibration_needs(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        result = self.succeed(db, config, tmp_path, monkeypatch)
+        assert result.ok, result.error
+
+        row = db.one("SELECT * FROM outcome")
+        assert row["est_out_bytes"] == 1000       # what the plan predicted
+        assert row["after_bytes"] == 1500         # what it actually produced
+        assert row["est_cpu_seconds"] == 600      # predicted
+        assert row["cpu_seconds"] == 1234.0       # measured
+        assert row["encoder"] == "hevc_vaapi"
+        assert row["resolution"] == "1080p"
+        assert row["content_class"] == "tv"
+
+    def test_it_survives_the_decision_being_deleted(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        self.succeed(db, config, tmp_path, monkeypatch, delete=True)
+
+        assert db.scalar("SELECT COUNT(*) FROM decision") == 0
+        assert db.scalar("SELECT COUNT(*) FROM outcome") == 1
+        assert db.scalar("SELECT COUNT(*) FROM job") == 1
+
+    def test_calibration_can_read_it_back(self, db, config, tmp_path, monkeypatch):
+        """End to end: a real job through the worker, measured by the module
+        that corrects the estimator."""
+        from app.plan import calibrate
+
+        self.succeed(db, config, tmp_path, monkeypatch)
+        report = calibrate.measure(db, min_samples=1)
+
+        assert report.used == 1
+        assert report.calibration.size_factor("ladder-bitrate") == pytest.approx(1.5)
+        assert report.calibration.speed_factor("hevc_vaapi:1080p") == pytest.approx(
+            1234.0 / 600
+        )
+
+    def test_a_downscale_is_recorded_at_the_resolution_it_ran_at(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        """A 4K source downscaled to 1080p is a 1080p encode, and belongs with
+        the other 1080p encodes when speed is calibrated."""
+        seed_job(db, tmp_path)
+        db.execute(
+            "UPDATE decision SET detail_json=?",
+            ('{"encoder": "hevc_vaapi", "quality": 24, "target_height": 1080}',),
+        )
+        db.execute("UPDATE media_file SET v_width=3840, v_height=2160")
+        row = db.one("SELECT d.*, mf.library_root, NULL AS title_kind FROM decision d "
+                     "JOIN media_file mf ON mf.id = d.file_id")
+        info = fake_info(v_width=3840, v_height=2160)
+
+        assert worker._outcome_shape(row, info, worker._detail(row)) == ("tv", "1080p")
 
 
 class TestSafetyCeilings:

@@ -2,10 +2,14 @@
 
 Secondary to Plex, but they cover a real gap: files the *arrs have imported but
 Plex has not scanned yet, and libraries where Plex's own match is wrong. They
-also carry the TVDB/TMDB ids that Phase 4 needs when it writes custom formats,
-so resolving through them now means that work is already done.
+also carry the TVDB/TMDB ids, which are the identifiers the rest of the project
+resolves titles against.
 
-Every call here is read-only. Nothing in Phase 1 writes to an *arr.
+**Every call here is read-only, and this module stays that way.** It runs on
+every `app identify`, so it should be incapable of changing anything. The guard
+that writes custom formats to Sonarr and Radarr subclasses `ArrClient` in
+`app/guard/arr_guard.py` and adds its verbs there, in the one module with a
+reason for them. A test asserts this class has no `post`, `put` or `delete`.
 """
 
 from __future__ import annotations

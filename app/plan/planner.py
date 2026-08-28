@@ -35,7 +35,9 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from app.db import Database
+from app.plan import calibrate as calibrate_mod
 from app.plan import estimate as estimate_mod
+from app.plan import keepers as keepers_mod
 from app.plan.profiles import Ladder, resolve_ladder
 from app.plan.rules import CPU_ACTIONS, SKIP, FileFacts, decide
 
@@ -62,6 +64,8 @@ class PlanStats:
     skip_reasons: Counter = field(default_factory=Counter)
     provisional: bool = False
     notes: list[str] = field(default_factory=list)
+    keepers: int = 0        # queued files on the hand-written x265 list
+    software: int = 0       # of those, ones that really got a software rung
 
     @property
     def queued(self) -> int:
@@ -86,6 +90,11 @@ class PlanStats:
             )
         if self.preserved:
             lines.append(f"  left alone {self.preserved} decision(s) already in flight")
+        if self.keepers:
+            lines.append(
+                f"  keepers    {self.keepers} queued from the x265 list "
+                f"({self.software} on a software rung)"
+            )
         return "\n".join(lines)
 
 
@@ -151,9 +160,22 @@ def build(
 ) -> PlanStats:
     """Rebuild the plan from current facts. Writes rows; touches no media."""
     ladder = ladder or resolve_ladder(config)
-    estimator = estimator or estimate_mod.DEFAULT
+    calibration = calibrate_mod.load(db)
+    estimator = estimator or estimate_mod.Estimator(calibration)
     stats = PlanStats(provisional=ladder.provisional, notes=ladder.notes())
     now = time.time()
+
+    keepers = keepers_mod.load(config)
+    if keepers.error:
+        stats.notes.append(keepers.error)
+    if keepers and not ladder.has_software():
+        stats.notes.append(
+            f"{len(keepers.patterns)} keeper pattern(s) are configured but the "
+            f"ladder has no software rung, so they will be encoded on the iGPU "
+            f"like everything else. Run the benchmark with --include-software."
+        )
+    if calibration is not None:
+        stats.notes.append(calibrate_mod.describe(calibration))
 
     in_flight = {
         row["file_id"]
@@ -179,6 +201,7 @@ def build(
             content_class=_content_class(row),
             title_id=row["title_id"],
             in_open_duplicate_group=row["id"] in duplicates,
+            is_keeper=keepers.matches(row["path"]),
         )
         decision = decide(facts, config, ladder, estimator)
         decision.priority = _priority(decision.est_saved_bytes, decision.est_cpu_seconds)
@@ -206,20 +229,28 @@ def build(
                 stats.actions[decision.action] += 1
                 stats.est_saved_bytes += decision.est_saved_bytes or 0
                 stats.est_cpu_seconds += decision.est_cpu_seconds or 0.0
+                if facts.is_keeper:
+                    stats.keepers += 1
+
+            encoder = decision.detail.get("encoder")
+            if state == base_state and facts.is_keeper and encoder and not (
+                encoder.endswith("_vaapi") or encoder.endswith("_qsv")
+            ):
+                stats.software += 1
 
             db.execute(
                 "INSERT INTO decision "
                 "(file_id, title_id, action, profile, reason, est_out_bytes, "
                 " est_saved_bytes, est_cpu_seconds, priority, state, "
-                " estimate_basis, detail_json, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " estimate_basis, detail_json, encoder, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     decision.file_id, facts.title_id, decision.action,
                     decision.profile, decision.reason, decision.est_out_bytes,
                     decision.est_saved_bytes, decision.est_cpu_seconds,
                     decision.priority, state, decision.estimate_basis,
                     json.dumps(decision.detail) if decision.detail else None,
-                    now,
+                    encoder, now,
                 ),
             )
         db.execute("COMMIT")

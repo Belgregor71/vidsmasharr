@@ -196,12 +196,23 @@ def activity(request: Request):
     if totals["est"]:
         accuracy = {"ratio": totals["saved"] / totals["est"]}
 
+    # Broken out per estimator model, because they are wrong in different
+    # directions and one aggregate number hides both. This is the same
+    # measurement `app calibrate` acts on; the page only reads it.
+    from app.plan import calibrate
+
+    report = calibrate.measure(db)
+
     return _render(
         request, "activity.html",
         totals=totals, outcomes=outcomes, running=running, failures=failures,
         accuracy=accuracy,
         failed=len(failures),
         held=db.scalar("SELECT COUNT(*) FROM decision WHERE state='held'") or 0,
+        models=report.size + report.speed,
+        model_warnings=report.warnings,
+        in_force=calibrate.load(db),
+        min_samples=calibrate.MIN_SAMPLES,
     )
 
 

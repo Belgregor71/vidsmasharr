@@ -34,7 +34,8 @@ costs some savings on one file; a false negative destroys it.
 
 ## Status
 
-**Phases 0 and 1 are complete.** Phases 2–4 are not built yet.
+**All five phases are built.** Phases 0 and 1 have run against the real
+library; the rest have not yet.
 
 | Phase | What | State |
 |---|---|---|
@@ -42,11 +43,15 @@ costs some savings on one file; a false negative destroys it.
 | 1 | Scan, identify via Plex/*arr, duplicate report + UI | Done |
 | 2 | Decision engine, planner, dry-run plan | Built |
 | 3 | Encode pipeline, verification, atomic swap, scheduler | Built |
-| 4 | *arr profile guard, estimator calibration, x265 keepers | Not started |
+| 4 | *arr guard, estimator calibration, x265 keepers | Built |
 
-Phases 0 to 2 only read your media. Phase 3 is the one that writes: it can
-replace a file and delete the original, and it ships with both of its safety
-switches in the off position (`dry_run` on, `delete_original_on_success` off).
+Phases 0 to 2 only read your media. Two phases write, and they write to
+different places: **Phase 3** can replace a file and delete the original, and
+ships with both safety switches off (`dry_run` on,
+`delete_original_on_success` off). **Phase 4's *arr guard** is the only code
+that writes outside this project at all -- it edits custom formats and quality
+profile scores in Sonarr and Radarr -- and it shows a diff and changes nothing
+until you pass `--apply`.
 
 ## Phase 0: run this first
 
@@ -289,6 +294,102 @@ docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work --retr
 Progress and history are at **http://&lt;nas&gt;:8330/activity**, including how
 the actual savings compare with what the planner predicted.
 
+## Phase 4: keeping the work
+
+Three loose ends, and one of them has a deadline.
+
+### The *arr guard — do this before bulk encoding, not after
+
+Left to themselves, Sonarr and Radarr keep hunting for a better release of
+something they already have. Our encode does not change the name, so it does
+not change their idea of what the file is, and the next matching H.264 release
+looks like a fine upgrade. They download it and **delete the HEVC file to make
+room**. Every night of encoding gets quietly undone.
+
+```sh
+docker compose -f docker/docker-compose.yml run --rm vidsmasharr app arr-guard
+```
+
+That reads and reports. It prints exactly what it would write, then writes
+nothing. `--apply` is the only flag that changes anything, and everything it
+changes is recorded — `app arr-guard --revert` puts it all back.
+
+What it does: creates one custom format matching HEVC in the release title and
+gives it a **positive** score on every quality profile. Both *arrs decide an
+upgrade by comparing a candidate release's custom-format score against the
+score of the file already on disk, and reject anything not strictly better at
+the same quality. So a high score on HEVC is what protects it. Scoring it
+*negatively* reads plausibly — we are trying to make HEVC not an upgrade
+candidate — and does exactly the opposite: it makes every H.264 release an
+upgrade over the file you just spent the night making.
+
+Three things it tells you that are worth reading before you apply it:
+
+- **Whether the format will actually match your files.** A custom format
+  matches the release title, and our re-encode keeps the original name, which
+  usually says `x264`. The guard samples the *arr's own files, finds the HEVC
+  ones, and reports what fraction our regex would reach. If that number is
+  low, the guard cannot protect those files, and the fix — putting
+  `{MediaInfo VideoCodec}` in your naming format and renaming the library — is
+  yours to make, not one this will make for you.
+- **Whether something already penalises HEVC.** A TRaSH-style `x265 (HD)`
+  format at -10000 is a common deliberate setting, and while it stands nothing
+  added here protects anything. `--neutralise` raises those to zero; it is
+  opt-in because they are your tuning.
+- **What it does not stop.** A profile still climbing towards Bluray-1080p will
+  replace a WEB-DL HEVC file whatever it scores. That is the profile doing what
+  you told it to, and the guard does not override it.
+
+### Estimator calibration
+
+The queue is ordered by predicted GB per encode-hour, so an estimate that is
+systematically wrong does not just misreport — it puts the wrong files first,
+for months. Every `outcome` row records the prediction beside the measurement
+and the model that produced it.
+
+```sh
+docker compose -f docker/docker-compose.yml run --rm vidsmasharr app calibrate
+```
+
+It reports and changes nothing; `--apply` saves the correction, and the next
+`app plan` uses it. Corrections are per model rather than in aggregate (the
+ladder's bitrate, the ladder's size ratio, the policy target and a stream copy
+are wrong in different directions), taken as a median so one pathological file
+cannot re-rank a year of work, and clamped — a factor outside 0.25–4× means the
+measurement is broken rather than the estimator, and it says so instead of
+shipping it. The same numbers are on the **/activity** page.
+
+A corrected estimate records its basis as `<model>+cal`, so the next round
+measures the corrected model separately and converges towards 1× instead of
+compounding on itself.
+
+### The x265 keepers list
+
+Hardware HEVC does 1080p at about 35 fps — roughly half an hour per episode.
+Software x265 at `slow` does 3–6 fps on the same box: six to ten hours for the
+same file. That is never worth spending on a queue and sometimes worth spending
+on a film you care about, where x265 holds grain and dark detail the
+fixed-function block smears.
+
+So it is a list you write by hand, at `encoder.keepers_file`. One path per
+line, `#` for comments; a line may be an exact file, a directory (everything
+under it), a glob, or a bare file name:
+
+```
+# worth the hours
+/media/movies/Blade Runner 2049 (2017)/
+/media/movies/*/*Criterion*.mkv
+br2049.mkv
+```
+
+Nothing puts a file on that list automatically. Keepers need a software rung in
+the ladder, which means running the benchmark with `--include-software` —
+without one they fall back to the hardware encoder and `app plan` says so
+rather than silently dropping them. And a keeper only ever runs in the night
+window: the worker steps over it during the day and takes the next hardware job
+instead, because a six-hour encode started at nine in the morning is still
+running at teatime.
+
 ## Safety model
 
 Enforced across the project, and now actually implemented by the Phase 3
@@ -314,7 +415,10 @@ python -m venv .venv
 The test suite concentrates on the things most expensive to get wrong: HDR
 detection (`tests/test_probe_hdr.py`), quality-ladder interpolation
 (`tests/test_ladder.py`), the planning rules (`tests/test_plan.py`), and
-everything that can delete or replace a file (`tests/test_work.py`).
+everything that can delete or replace a file (`tests/test_work.py`), and
+the only code that writes outside this project (`tests/test_arr_guard.py`,
+which drives a fake Sonarr over httpx's MockTransport so the request shapes
+are exercised as an *arr would see them).
 
 You can exercise the whole Phase 0 pipeline on a workstation without any
 Intel GPU:
@@ -328,7 +432,8 @@ python -m bench --libraries /path/to/media --allow-software-only \
 
 ```
 app/
-  cli.py               `app scan|identify|duplicates|phase1|plan|work|status|serve`
+  cli.py               `app scan|identify|duplicates|phase1|plan|work|
+                        arr-guard|calibrate|status|serve`
   config.py            YAML + env config, safe defaults
   db.py                SQLite schema and migrations
   scan/probe.py        ffprobe -> normalised facts, HDR detection
@@ -343,6 +448,9 @@ app/
   plan/estimate.py     predicted output size and encode time
   plan/profiles.py     the quality ladder as production reads it
   plan/planner.py      rank every file into a queue; write decisions
+  plan/calibrate.py    correct the estimator against jobs that really ran
+  plan/keepers.py      the hand-written list that gets software x265
+  guard/arr_guard.py   stop the *arrs undoing the encoding  [writes outside]
   web/                 FastAPI + Jinja2 UI: overview, duplicates, plan,
                        activity, library
   work/ffmpeg_cmd.py   encode + VMAF command construction

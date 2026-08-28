@@ -44,6 +44,20 @@ radarr:
   path_map:
     "/volume1/data/media": "/media"
 
+# The *arr guard: stops Sonarr and Radarr replacing the HEVC files we make with
+# fresh H.264 downloads, which would undo every night of encoding. Run
+# `app arr-guard` to see the diff; nothing is written without --apply.
+guard:
+  format_name: "vidsmasharr HEVC"
+  # Matched against the release title, which is what an *arr scores a file by.
+  # match_regex: '(?i)\b(?:[xh][\s._-]?265|hevc)\b'
+  # POSITIVE, and it has to be. Both *arrs compare a candidate release's score
+  # against the score of the file already on disk, so a high score on HEVC is
+  # what protects it. A negative score would make every H.264 release an
+  # upgrade over our work.
+  score: 1000
+  sample_files: 200
+
 schedule:
   night_start: "23:00"
   night_end: "07:00"
@@ -70,8 +84,12 @@ encoder:
   preferred: auto
   vaapi_device: /dev/dri/renderD128
   x265_preset: slow
-  # Optional list of paths that are worth hours of software x265. Everything
-  # else uses hardware.
+  # Optional list of paths worth hours of software x265 rather than half an
+  # hour on the iGPU. One path per line, `#` for comments; a line may be an
+  # exact file, a directory (everything under it), a glob, or a bare file name.
+  # Keepers only ever run in the night window. They also need a software rung
+  # in the ladder, which means running the benchmark with --include-software --
+  # without one they fall back to hardware and `app plan` says so.
   keepers_file: /config/keepers.txt
 
 audio:

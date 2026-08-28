@@ -78,12 +78,20 @@ class Ladder:
 
     # -- lookup -------------------------------------------------------------
 
-    def rung_for(self, content_class: str, resolution: str) -> Rung | None:
+    def rung_for(
+        self, content_class: str, resolution: str, *, prefer_software: bool = False
+    ) -> Rung | None:
         """The setting to use, or None if the benchmark found nothing usable.
 
         Prefers the encoder the benchmark nominated, then any other hardware
         encoder, then software. Software is last because on a J3455 it is hours
         per file -- valid, but only ever for a hand-picked keepers list.
+
+        `prefer_software` inverts that for a file on that list. It does not
+        *require* software: a keeper still gets encoded on the iGPU if the
+        benchmark was never run with `--include-software` and there is no crf
+        rung to use. Refusing to plan the file at all would be a worse answer
+        than encoding it well but not perfectly.
         """
         matches = [
             r for r in self.rungs
@@ -93,11 +101,16 @@ class Ladder:
             return None
 
         def rank(rung: Rung) -> tuple[int, int]:
+            if prefer_software:
+                return (0 if not rung.is_hardware else 1, -rung.samples)
             if self.preferred_encoder and rung.encoder == self.preferred_encoder:
                 return (0, -rung.samples)
             return (1 if rung.is_hardware else 2, -rung.samples)
 
         return sorted(matches, key=rank)[0]
+
+    def has_software(self) -> bool:
+        return any(not r.is_hardware for r in self.rungs)
 
     def unusable_at(self, resolution: str) -> str | None:
         """Why this resolution has no workable setting, if the benchmark said so.

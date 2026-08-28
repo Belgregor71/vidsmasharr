@@ -1,4 +1,4 @@
-# Handover — sessions 1–3 (2026-08-27 → 28)
+# Handover — sessions 1–4 (2026-08-27 → 28)
 
 Read this first. It records what is *verified* on the real hardware versus what
 is still assumed, so tomorrow doesn't re-litigate settled decisions or trust
@@ -6,97 +6,189 @@ unverified ones.
 
 ---
 
-## NEXT SESSION: build Phase 4
+## NEXT SESSION: Phase 4 is built. Run it against the real box.
 
-Phases 0-3 are built and pushed. Phase 4 is the last one, and one part of it
-is urgent in a way the others are not.
+Every phase is now built. Nothing left is a coding task -- what remains is
+running this against the real library and the real *arrs, in an order chosen so
+that the cheap checks come before the expensive ones.
 
-### In flight when this session ended (2026-08-28)
+### 1. Read the movie calibration log first
 
-A targeted movie calibration was **still running**:
+A targeted movie calibration was still running when session 3 ended and its
+result is **still unknown**:
 
 ```sh
 bench --libraries /media/movies --content-class movie --sources 2 --qp-sweep 14 17 20 --keep-clips
 ```
 
-Log at `/volume1/scratch/vidsmasharr/bench-movies.log`. **Its result is not
-known.** First thing to do is read the tail of that log, then fold it in with
-the original run rather than replacing it:
+Log at `/volume1/scratch/vidsmasharr/bench-movies.log`. Read the tail, then
+fold it in with the original run rather than replacing it -- a movies-only run
+on its own would drop every trustworthy TV rung:
 
 ```sh
 sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.ladder --all-runs --verbose
 ```
 
-If the movie rungs still say "no tested setting reached VMAF 95", go lower
-again (`--qp-sweep 10 12 14`) or accept that VMAF 95 is not reachable on this
-hardware for that content and lower `quality.movie_vmaf` deliberately rather
-than by accident. Do not let a rung pinned to the sweep floor pass as
-calibrated -- its size ratio is not a measurement.
+If the movie rungs still say "no tested setting reached VMAF 95", that is now a
+decision to make rather than a run to repeat: either go lower (`--qp-sweep 10
+12 14`) or lower `quality.movie_vmaf` deliberately. Do not let a rung pinned to
+the sweep floor pass as calibrated -- its size ratio is not a measurement. See
+the open question at the bottom of this file.
 
-### Build the *arr guard FIRST -- it is the one with a deadline
+### 2. Verify direct play on both TVs
 
-**Once encoding starts, Sonarr and Radarr will replace the new HEVC files with
-fresh H.264 downloads** unless they are told not to. Every night of encoding
-gets quietly undone, and worse, the *arrs delete the HEVC file to make room for
-the "upgrade". This must land before any bulk encoding, not after.
+Still the cheapest check with the largest consequence, and still unverified.
+Encode 2-3 real files at the ladder settings, put them in Plex, confirm each TV
+says *Direct Play* rather than *Transcode*. If either transcodes, the CPU cost
+moves to playback, the codec choice has to change, and the whole *arr guard
+becomes moot. Do this before anything downstream of it.
 
-The locked decision: *auto-write custom formats so HEVC is never an upgrade
-candidate -- **with a dry-run diff shown first***. That dry-run diff is not
-optional. These are the user's live media managers with their own history and
-tuning, and this is the first code in the project that writes to something
-outside our own database. Show what would change, change nothing until asked.
+### 3. Install the *arr guard before any bulk encoding
 
-What exists to build on: `app/identity/arr.py` already has working
-`SonarrClient` / `RadarrClient` with a `_get` helper, error handling that
-distinguishes a rejected API key from an unreachable host, and path mapping.
-It is **read-only by design** -- adding writes means adding `_post`/`_put`
-deliberately, not widening `_get`.
+`app arr-guard` reads and reports; `--apply` is the only thing that writes.
+Run it without `--apply` first and **read the sampled match rate** -- that
+number decides whether the guard is worth applying at all:
 
-Worth checking before designing: the *arrs are v3 API (`/api/v3/`), and custom
-formats live at `/customformat` with quality profiles at `/qualityprofile`. The
-guard needs a format that matches HEVC/x265 and a negative score on every
-profile that could otherwise upgrade over it. Confirm the actual shape against
-the running instances rather than from memory -- they are on :8989 and :7878.
+```sh
+sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app arr-guard
+```
 
-### Then estimator calibration
+Two things in that output need a human:
 
-Every `outcome` row carries `est_saved_bytes` alongside `saved_bytes` and
-`est_cpu_seconds` alongside `cpu_seconds`, recorded for exactly this. Once
-enough real jobs have run, compare them and correct the estimator. The
-`/activity` page already shows the ratio.
+- **The match rate.** An *arr scores a file by its *release name*, and our
+  re-encode keeps the original name, which usually says `x264`. The guard
+  samples the *arr's own files and reports what fraction of the HEVC ones its
+  regex would actually reach. If that is low, the guard protects little, and
+  the fix -- `{MediaInfo VideoCodec}` in the naming format plus a library
+  rename -- is the user's call. **This was designed for but never measured
+  against the real instances; the sample is how we find out.**
+- **An existing negative HEVC score.** A TRaSH-style `x265 (HD)` at -10000 is a
+  common deliberate setting, and while it stands nothing the guard adds
+  protects anything. `--neutralise` raises those to zero, opt-in.
 
-Note the honest ordering problem: the planner ranks by predicted GB per hour,
-so a systematically wrong estimate does not just misreport -- it puts the wrong
-files first, for months. Calibration is worth more here than in a project where
-the queue finishes.
+Then `--apply`. Every write is recorded in `guard_change`, and
+`app arr-guard --revert` puts it all back.
 
-`app/plan/estimate.py` records `estimate_basis` on every decision (which model
-produced the number), so the comparison can be done per model rather than in
-aggregate.
+### 4. Run the plan and the first real encode
 
-### And the x265 keepers list
+Unchanged from before -- see Next Steps further down. `app plan`, then
+`app work --limit 1`, then `--limit 1 --execute` with deletion still off, then
+watch the output on both TVs.
 
-`encoder.keepers_file` is already in the config and unused. Software x265 at
-~3-6 fps is hours per file, so it is only ever for a hand-picked list, and only
-in the night window. The plumbing exists: `VideoSpec` takes `libx265` with a
-preset, and the ladder builds `crf` rungs when `--include-software` is passed
-to the benchmark. Nobody has run that sweep yet.
+### 5. After a batch has run, calibrate
 
-### Do not re-litigate these while building Phase 4
+```sh
+sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app calibrate
+```
 
-- The *arr clients are read-only until Phase 4 deliberately makes them not.
-- Anything not provably 8-bit SDR is never rewritten. This holds for every
-  phase, and Phase 4 must not add an exception for "the *arr says it is fine".
-- A dry-run diff before writing to Sonarr/Radarr is a locked decision, not a
-  nicety.
+Reports and changes nothing until `--apply`. It needs 8 outcomes per model
+before it will produce a factor, so this is a step for after the first real
+batch, not before it. Re-run `app plan` afterwards -- the point is the queue
+order, and existing decisions keep the estimates they were written with.
 
-### Before any of it, if bulk encoding is close
+### Do not re-litigate these while running it
 
-**Direct play is still unverified on both TVs.** Encode 2-3 real files at the
-final ladder settings, put them in Plex, confirm each TV says *Direct Play* not
-*Transcode*. If either transcodes, the CPU cost moves to playback and the codec
-choice has to change -- which would make the whole *arr guard moot. It is
-cheap to check and expensive to skip.
+- Anything not provably 8-bit SDR is never rewritten. No exception for "the
+  *arr says it is fine".
+- The guard's score is **positive**, and that is not a typo. Both *arrs compare
+  a candidate release's custom-format score against the score of the file
+  already on disk, so a high score on HEVC is what protects it. A negative
+  score would make every H.264 release an upgrade over a night of work. The
+  handover that specified Phase 4 said "negative"; it was wrong, and the code
+  and its tests now pin the right sign.
+- A dry-run diff before writing to Sonarr/Radarr is locked, and there is no
+  flag to skip it.
+- `app/identity/arr.py` stays read-only. The write verbs live in
+  `app/guard/arr_guard.py`, in the one module with a reason for them.
+
+---
+
+## Session 4 (2026-08-28): Phase 4 built
+
+```
+app/guard/arr_guard.py   the *arr guard: plan, diff, apply, revert  [writes outside]
+app/plan/calibrate.py    correct the estimator against jobs that really ran
+app/plan/keepers.py      the hand-written list that gets software x265
+app/db.py                + migration 7
+app/cli.py               + `app arr-guard [--apply] [--revert] [--neutralise]`
+                         + `app calibrate [--apply] [--reset] [--min-samples N]`
+app/web/                 /activity now breaks accuracy out per estimator model
+```
+
+292 tests pass (Phase 4 added 60).
+
+### A bug found on the way in, and it mattered
+
+**Every successful job was erasing its own measurement.** `job.decision_id` and
+`outcome.job_id` were `ON DELETE CASCADE`, and the worker deletes the decision
+the moment it replaces an original -- so the delete cascaded through `job` into
+`outcome` and took the row with it. The `est_saved_bytes` and `est_cpu_seconds`
+columns recorded specifically for Phase 4 would have been gone by the time
+Phase 4 came to read them, and the `/activity` page would have shown an empty
+history after a successful night.
+
+Migration 7 rebuilds both tables with `ON DELETE SET NULL`: the intent may go,
+the record of what happened stays. It also adds `est_out_bytes`,
+`estimate_basis`, `encoder`, `content_class` and `resolution` to `outcome`, so
+calibration can be done per model rather than in aggregate.
+
+`Database.migrate()` now runs with foreign keys off and a `foreign_key_check`
+afterwards -- SQLite's own documented procedure. Without it, `DROP TABLE job`
+performs an implicit DELETE and cascades into the rows the migration exists to
+preserve.
+
+### Phase 4 decisions worth not re-litigating
+
+- **The guard's score is positive.** Explained above. There is a test named for
+  it, because the wrong sign is the plausible-sounding one.
+- **The guard predicts its own effect before writing.** It samples the *arr's
+  files, finds the HEVC ones, and reports how many its regex would actually
+  match. A guard that protects none of the files it exists for is worth
+  knowing about before it is installed, and this was the one part of the design
+  that could not be verified from a workstation.
+- **It does not touch other people's custom formats without being asked.** A
+  negative HEVC score defeats the guard entirely, so it is reported loudly, but
+  `--neutralise` is opt-in: those scores are the user's own tuning.
+- **It does not stop a genuine quality upgrade**, and says so. A profile
+  climbing to Bluray-1080p replacing a WEB-DL HEVC file is the profile doing
+  what it was told. Overriding that would be the guard deciding something that
+  is not its to decide.
+- **`app/identity/arr.py` stays read-only.** `ArrWriter` subclasses it rather
+  than adding verbs to it. Phase 1 resolves identity through that class on
+  every run and should stay incapable of changing anything; a test asserts
+  `ArrClient` has no `post`, `put` or `delete`.
+- **Calibration is per model, median, and clamped.** Per model because the
+  ladder's bitrate and the policy target are wrong in different directions and
+  an average hides both. Median because a concert film should not re-rank a
+  year of work. Clamped to 0.25-4x because a factor outside that is a broken
+  measurement, not a broken estimator -- and it warns rather than silently
+  shipping it.
+- **A corrected estimate is labelled `<model>+cal`.** The next calibration then
+  measures the corrected model as its own population and its factor converges
+  towards 1 instead of compounding on the one already applied.
+- **Speed is keyed by encoder *and resolution*.** SD runs four times faster
+  than 1080p on this box; pooling them is exactly how the first benchmark
+  projection came out 1.75x optimistic.
+- **A keeper with no software rung falls back to hardware and says so.**
+  Encoding a film well but not perfectly beats leaving it out of the queue
+  because the benchmark was never run with `--include-software`.
+- **Keepers are night-only, enforced in the query that picks the next job.**
+  That is why `decision.encoder` is a column rather than a dig into
+  `detail_json`: the SQL has to be able to ask. `--now` overrides it, because
+  that flag already means "ignore the schedule".
+- **A missing keepers file is reported, not ignored.** "No keepers" and "the
+  keepers list did not load" are different nights of encoding.
+
+### What Phase 4 has not met
+
+The guard has never talked to the real Sonarr or Radarr. Its tests drive a fake
+one over httpx's `MockTransport`, so the request shapes are right by
+construction, but two things can only be settled against the live instances:
+whether `/customformat/schema` offers `ReleaseTitleSpecification` on those
+versions (the guard stops rather than guessing if it does not), and what the
+real match rate is. Both are printed by the dry run.
+
+Calibration has nothing to calibrate against until `app work` has really run.
 
 ---
 
@@ -118,13 +210,13 @@ overnight encoding to do exhaustively, so queue order decides everything.
 `app plan` for the real number rather than quoting this one.
 
 - Repo: https://github.com/Belgregor71/vidsmasharr (public)
-- `main`, local and remote in sync at `b2bcbb5`
-- Phases 0-3 built; **Phase 4 is the next session's job** -- see the top of
-  this file
-- A movie calibration was still running when the session ended; its result is
-  unknown
-- 228 tests passing (Phase 1 added 72, Phase 2 added 45, Phase 3 added 60,
-  the ladder fix added 7)
+- `main`, local and remote in sync
+- **Phases 0-4 are all built.** What remains is running them against the real
+  box -- see the top of this file
+- A movie calibration was still running when session 3 ended; its result is
+  still unknown
+- 292 tests passing (Phase 1 added 72, Phase 2 added 45, Phase 3 added 60,
+  the ladder fix added 7, Phase 4 added 60)
 - **Nothing has touched the media library yet.** Phase 3 now *can* -- it is
   the first code that deletes -- but it ships with `dry_run` on and
   `delete_original_on_success` off, and has never been run for real.
@@ -282,7 +374,7 @@ single biggest open risk in the whole project.
 | Verification | ffprobe sanity checks on every file + sampled VMAF on 3 segments |
 | Schedule | Overnight full speed; daytime throttled, auto-pause while Plex streams |
 | Identity | Plex DB (primary) + Sonarr/Radarr APIs |
-| *arr guard | Auto-write custom formats so HEVC is never an upgrade candidate — **with a dry-run diff shown first** |
+| *arr guard | Auto-write custom formats so HEVC is never an upgrade candidate — **with a dry-run diff shown first**. Built in session 4; note the score is **positive**, see below |
 | Quality bar | Movies VMAF ~95, TV episodes ~92 |
 | Stack | Python 3.11 + FastAPI + SQLite, Docker via Container Manager |
 | UI | Web UI, Unmanic-style, server-rendered Jinja2 + HTMX |
@@ -325,6 +417,9 @@ app/plan/rules.py      what to do with one file, and why       [CRITICAL]
 app/plan/estimate.py   predicted output size and encode time
 app/plan/profiles.py   profiles.yaml as production reads it
 app/plan/planner.py    rank everything into a queue, write decisions
+app/plan/calibrate.py  correct the estimator against jobs that really ran
+app/plan/keepers.py    the hand-written list that gets software x265
+app/guard/arr_guard.py stop the *arrs undoing the encoding  [writes OUTSIDE]
 app/web/               FastAPI + Jinja2 UI on :8330
 app/work/ffmpeg_cmd.py encode + VMAF command construction
 app/work/streams.py    which audio and subtitle tracks survive
@@ -338,12 +433,11 @@ bench/runner.py        clip extraction, encode matrix, VMAF, decode-mode probe
 bench/ladder.py        interpolates settings hitting VMAF targets -> profiles.yaml
 bench/__main__.py      the 5-step Phase 0 run
 docker/                two-ffmpeg image + DSM compose
-tests/                 228 tests
+tests/                 292 tests
 ```
 
-**Phases 1, 2 and 3 are built** (2026-08-28) and run end to end on synthetic
-data, but none has been **run against the real library** -- that needs the NAS.
-Phase 4 (*arr guard, estimator calibration, x265 keepers) is not started. See
+**Phases 1 to 4 are built** (2026-08-28) and run end to end on synthetic data,
+but none has been **run against the real library** -- that needs the NAS. See
 `README.md` for the phase table.
 
 ### Phase 1 decisions worth not re-litigating
@@ -642,9 +736,10 @@ encoding thousands of files.
    is off, so the library is untouched. Watch that file on both TVs before
    going any further. Then turn deletion on in `config.yaml` and use
    `app work --install-held` so the encode is not repeated.
-7. **Phase 4**: the *arr guard (custom formats so HEVC is never an upgrade
-   candidate, with a dry-run diff first), estimator calibration against the
-   `outcome` table, and the x265 keepers list.
+7. ~~**Phase 4**: the *arr guard, estimator calibration, x265 keepers.~~
+   **Built 2026-08-28** — see the top of this file for how to run each, and in
+   what order relative to steps 4-6. The guard goes in *before* bulk encoding;
+   calibration only works *after* a real batch.
 
 Steps 4 and 5 both need Phase 1 to have run on the real library first:
 
@@ -694,6 +789,16 @@ refinements worth building into Phase 2:
   no (best 94.9 at the finest setting tried). If the finer sweep also says no,
   that is a decision for the user: lower `quality.movie_vmaf`, or accept that
   movies get the finest setting available and a modest size reduction.
+- **Does the *arr guard's custom format actually match our re-encoded files?**
+  It matches on the release title, and our encode keeps the original name,
+  which usually says `x264`. `app arr-guard` samples the live instances and
+  prints the real match rate. If it is low, the only fix is putting
+  `{MediaInfo VideoCodec}` in the *arr naming format and renaming the library
+  — which rewrites filenames Plex has already indexed, so it is a deliberate
+  choice, not something the guard will do on its own.
+- **Should `--neutralise` be used?** Only if the dry run reports an existing
+  negative HEVC score. It raises those to zero, and they are the user's own
+  tuning, so it is their call.
 
 ## Note for the assistant
 

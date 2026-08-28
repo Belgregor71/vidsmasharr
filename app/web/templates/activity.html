@@ -87,6 +87,42 @@
 </table>
 {% endif %}
 
+{% if models %}
+<h2 style="margin-top:1.5rem">How good the estimates are</h2>
+<p class="note">
+  The queue is ordered by predicted GB per encode-hour, so a model that is
+  systematically wrong does not just misreport &mdash; it puts the wrong files
+  first, for months. A factor above 1&times; means the real result came in
+  bigger or slower than predicted. Correct them with
+  <code>app calibrate --apply</code>, then re-plan.
+  {% if in_force %}<br>In force now: {{ in_force.samples }} outcome(s), built
+  {{ in_force.built_at | since }}.{% else %}<br>Nothing is being corrected yet;
+  estimates are the raw model.{% endif %}
+</p>
+<table>
+  <thead>
+    <tr><th>Model</th><th>Predicts</th><th class="n">Samples</th>
+        <th class="n">Measured</th><th>Reading</th></tr>
+  </thead>
+  <tbody>
+  {% for group in models %}
+    <tr>
+      <td><code>{{ group.key }}</code></td>
+      <td class="muted">{{ 'output size' if group.kind == 'size' else 'encode time' }}</td>
+      <td class="n{{ ' muted' if group.n < min_samples }}">{{ group.n }}</td>
+      <td class="n">{{ group.median | round(2) }}&times;</td>
+      <td class="muted">
+        {% if group.n < min_samples %}too few to act on{% else %}{{ group.reading }}{% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% for warning in model_warnings %}
+<p class="note">! {{ warning }}</p>
+{% endfor %}
+{% endif %}
+
 {% if failures %}
 <h2 style="margin-top:1.5rem">Failed</h2>
 <p class="note">

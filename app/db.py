@@ -200,6 +200,100 @@ ALTER TABLE decision ADD COLUMN detail_json TEXT;
 CREATE INDEX idx_decision_action ON decision(state, action);
 """)
 
+# --- 7: keep the record of what was done, and what it cost -----------------
+# `outcome` and `job` hung off `decision` with ON DELETE CASCADE, and the worker
+# deletes a decision the moment it succeeds and replaces the original. So every
+# completed job erased its own measurement on the way out -- exactly the rows
+# Phase 4 needs to calibrate the estimator against. The link to the decision is
+# now `SET NULL`: the intent may go, the record of what happened stays.
+#
+# The new columns on `outcome` are what makes a calibration per *model* rather
+# than in aggregate: which estimator produced the number, what it predicted the
+# output size would be, and enough about the source to group like with like.
+migration("""
+CREATE TABLE job_new (
+    id           INTEGER PRIMARY KEY,
+    decision_id  INTEGER REFERENCES decision(id) ON DELETE SET NULL,
+    state        TEXT NOT NULL,
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    cmd          TEXT,
+    scratch_path TEXT,
+    started_at   REAL,
+    ended_at     REAL,
+    cpu_seconds  REAL,
+    progress_pct REAL DEFAULT 0,
+    vmaf_json    TEXT,
+    error        TEXT
+);
+INSERT INTO job_new
+    SELECT id, decision_id, state, attempts, cmd, scratch_path, started_at,
+           ended_at, cpu_seconds, progress_pct, vmaf_json, error
+    FROM job;
+DROP TABLE job;
+ALTER TABLE job_new RENAME TO job;
+CREATE INDEX idx_job_state ON job(state);
+
+CREATE TABLE outcome_new (
+    id              INTEGER PRIMARY KEY,
+    job_id          INTEGER REFERENCES job(id) ON DELETE SET NULL,
+    file_path       TEXT NOT NULL,
+    action          TEXT NOT NULL,
+    before_bytes    INTEGER NOT NULL,
+    after_bytes     INTEGER NOT NULL,
+    saved_bytes     INTEGER NOT NULL,
+    est_saved_bytes INTEGER,
+    cpu_seconds     REAL,
+    est_cpu_seconds REAL,
+    vmaf_min        REAL,
+    vmaf_mean       REAL,
+    original_deleted INTEGER NOT NULL DEFAULT 0,
+    completed_at    REAL NOT NULL,
+    est_out_bytes   INTEGER,
+    estimate_basis  TEXT,
+    profile         TEXT,
+    encoder         TEXT,
+    content_class   TEXT,
+    resolution      TEXT,
+    duration_s      REAL
+);
+INSERT INTO outcome_new
+    (id, job_id, file_path, action, before_bytes, after_bytes, saved_bytes,
+     est_saved_bytes, cpu_seconds, est_cpu_seconds, vmaf_min, vmaf_mean,
+     original_deleted, completed_at)
+    SELECT id, job_id, file_path, action, before_bytes, after_bytes, saved_bytes,
+           est_saved_bytes, cpu_seconds, est_cpu_seconds, vmaf_min, vmaf_mean,
+           original_deleted, completed_at
+    FROM outcome;
+DROP TABLE outcome;
+ALTER TABLE outcome_new RENAME TO outcome;
+CREATE INDEX idx_outcome_basis ON outcome(estimate_basis);
+CREATE INDEX idx_outcome_done  ON outcome(completed_at DESC);
+
+-- Which encoder the plan chose. A column rather than a dig into detail_json,
+-- because the worker has to be able to ask "is this a software encode?" in the
+-- SQL that picks the next job -- software x265 only ever runs at night.
+ALTER TABLE decision ADD COLUMN encoder TEXT;
+
+-- Every write the *arr guard makes to Sonarr or Radarr, with the payload it
+-- replaced. This is the first code in the project that writes anywhere outside
+-- our own database, so it writes down what it did and keeps the undo.
+CREATE TABLE guard_change (
+    id          INTEGER PRIMARY KEY,
+    service     TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    target      TEXT NOT NULL,
+    method      TEXT NOT NULL,
+    endpoint    TEXT NOT NULL,
+    before_json TEXT,
+    after_json  TEXT NOT NULL,
+    summary     TEXT NOT NULL,
+    applied_at  REAL NOT NULL,
+    reverted_at REAL
+);
+CREATE INDEX idx_guard_change_applied ON guard_change(applied_at DESC);
+""")
+
+
 
 class Database:
     """Thread-local connections over one SQLite file in WAL mode."""
@@ -227,9 +321,27 @@ class Database:
     def migrate(self) -> None:
         conn = self.conn
         current = conn.execute("PRAGMA user_version").fetchone()[0]
-        for index, sql in enumerate(SCHEMA[current:], start=current):
-            conn.executescript(sql)
-            conn.execute(f"PRAGMA user_version={index + 1}")
+        if current >= len(SCHEMA):
+            return
+
+        # Foreign keys off while migrating. Rebuilding a table means dropping
+        # the old one, and with keys on SQLite performs an implicit DELETE
+        # first -- which would cascade into the very rows a migration like 7
+        # exists to preserve. This is SQLite's own documented procedure for
+        # altering a table: keys off, migrate, check, keys on.
+        conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            for index, sql in enumerate(SCHEMA[current:], start=current):
+                conn.executescript(sql)
+                conn.execute(f"PRAGMA user_version={index + 1}")
+            broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if broken:
+                raise RuntimeError(
+                    f"migration left {len(broken)} dangling reference(s) in "
+                    f"{self.path}: {broken[:3]}"
+                )
+        finally:
+            conn.execute("PRAGMA foreign_keys=ON")
 
     # -- helpers ------------------------------------------------------------
 
