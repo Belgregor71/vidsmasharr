@@ -123,6 +123,8 @@ Do not re-derive these; they came from the box.
 | Volume | 28TB total, **25TB used, 3.9TB free, 87%** |
 | Scratch | `/volume1/scratch/vidsmasharr` (created) |
 | Repo on NAS | `/volume1/docker/vidsmasharr` |
+| Companion services (2026-08-28) | sonarr:8989, radarr:7878, prowlarr:9696, bazarr:6767, lidarr:8686, **tautulli:8181**, seerr:5055, maintainerr:6246 — all running |
+| Plex itself | a DSM package, not a container (consistent with the `PlexMediaServer` path above) |
 
 **The hardware plan is confirmed viable.** `hevc_vaapi` works, which was the
 single biggest open risk in the whole project.
@@ -147,6 +149,11 @@ single biggest open risk in the whole project.
    highest-value chore outstanding** — see Open Questions.
 7. **`--remove-orphans` would delete their `dockersocket` container**, which
    belongs to another stack. The orphan warning is cosmetic; ignore it.
+8. **`sudo cmd > /volume1/scratch/...` fails with "Permission denied."** The
+   shell opens the redirect as the *login user* before `sudo` ever runs, and
+   scratch is root-owned. Put the redirect inside root:
+   `sudo sh -c 'nohup docker compose ... > /volume1/scratch/vidsmasharr/bench.log 2>&1 &'`
+   The job number prints and then the job dies, so it looks like it started.
 
 ---
 
@@ -168,6 +175,10 @@ single biggest open risk in the whole project.
 | Quality bar | Movies VMAF ~95, TV episodes ~92 |
 | Stack | Python 3.11 + FastAPI + SQLite, Docker via Container Manager |
 | UI | Web UI, Unmanic-style, server-rendered Jinja2 + HTMX |
+
+**Implementation note (2026-08-28):** Tautulli is already running on :8181.
+Its API is an easier source of "is anyone streaming right now?" than polling
+Plex's own sessions endpoint, so the daytime auto-pause should look there first.
 
 ### The safety invariant that matters most
 
@@ -249,11 +260,14 @@ refinements worth building into Phase 2:
 - **Plex token, Sonarr URL/key, Radarr URL/key** — needed for Phase 1 identity
   resolution. Not yet gathered. They go in `config/config.yaml`, which is
   **gitignored** — never in `config.example.yaml`.
-- **Is Tdarr still active?** A `@tdarr-ffmpeg` core dump was seen on the NAS.
-  If it still has scheduled work it must be disabled — two tools re-encoding the
-  same library would fight over files and `/dev/dri`.
-- **Sonarr confirmed?** Radarr, Prowlarr and qBittorrent were all evidenced by
-  core dumps; Sonarr was not directly seen.
+- ~~**Is Tdarr still active?**~~ **Answered 2026-08-28: no Tdarr container is
+  running.** `docker ps` shows 26 containers and none is Tdarr, so the
+  `@tdarr-ffmpeg` core dump is historical. Nothing else is competing for
+  `/dev/dri`. Still worth a glance at Package Center in case a stopped
+  container has a schedule attached.
+- ~~**Sonarr confirmed?**~~ **Answered 2026-08-28: yes**, `sonarr` is up on
+  :8989 (`lscr.io/linuxserver/sonarr`). Radarr :7878, Prowlarr :9696,
+  Bazarr :6767, Lidarr :8686 also confirmed running.
 - **Library file counts** unknown. Needed to replace the guessed `6000` in the
   timeline projection.
 
