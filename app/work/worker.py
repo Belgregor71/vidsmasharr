@@ -654,6 +654,25 @@ def _record_outcome(db: Database, job_id, row, info, verdict, installed, seconds
     )
 
 
+def _mark_installed(db: Database, job_id) -> bool:
+    """Flip an existing outcome to "the original is gone". True if there was one.
+
+    Installing a held output is not a second job, it is the end of the first
+    one. The measurement worth keeping -- what the encode cost, what it
+    produced, what it scored -- was taken when the encode ran and cannot be
+    taken again here, because by now the source has been replaced. So the row
+    is updated rather than a new one written.
+    """
+    row = db.one("SELECT id FROM outcome WHERE job_id=?", (job_id,))
+    if row is None:
+        return False
+    db.execute(
+        "UPDATE outcome SET original_deleted=1, completed_at=? WHERE id=?",
+        (time.time(), row["id"]),
+    )
+    return True
+
+
 def _adopt_output(db: Database, file_id: int, path: Path, info: MediaInfo) -> None:
     """Point the database at the file we just wrote.
 
@@ -770,7 +789,13 @@ def install_held(db: Database, config, *, progress=print) -> WorkerStats:
             progress(f"  installed {source.name} "
                      f"({(info.size_bytes - out_bytes) / GB:.2f} GB)")
 
-        _record_outcome(db, row["job_id"], row, info, structure, installed, 0.0)
+        # The encode already wrote this job's outcome; this only finishes it.
+        # Writing a second row would double the reclaimed total on /activity and
+        # hand the estimator two votes for one file -- with the duplicate
+        # carrying no encode time and no VMAF, because neither can be measured
+        # from here.
+        if not _mark_installed(db, row["job_id"]):
+            _record_outcome(db, row["job_id"], row, info, structure, installed, 0.0)
         if installed.final_path:
             _adopt_output(db, row["file_id"], installed.final_path, structure.out_info)
         db.execute("DELETE FROM decision WHERE id=?", (row["id"],))

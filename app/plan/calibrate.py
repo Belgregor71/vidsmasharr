@@ -109,6 +109,10 @@ class Group:
     key: str
     kind: str            # "size" | "speed"
     ratios: list[float] = field(default_factory=list)
+    # The threshold this group is being judged against. Carried on the group
+    # rather than read from the module constant, so `--min-samples` changes
+    # what the report says as well as what the correction contains.
+    min_samples: int = MIN_SAMPLES
 
     @property
     def n(self) -> int:
@@ -137,7 +141,7 @@ class Group:
 
     @property
     def usable(self) -> bool:
-        return self.n >= MIN_SAMPLES
+        return self.n >= self.min_samples
 
     @property
     def reading(self) -> str:
@@ -184,12 +188,12 @@ class Report:
 
         lines.append("\n  output size, by the model that predicted it:")
         for group in self.size:
-            mark = "  " if group.usable else "  (too few) "
-            lines.append(f"    {mark}{group.describe()}")
+            mark = "" if group.usable else "(too few)"
+            lines.append(f"    {mark:<10}{group.describe()}")
         lines.append("\n  encode time, by encoder and resolution:")
         for group in self.speed:
-            mark = "  " if group.usable else "  (too few) "
-            lines.append(f"    {mark}{group.describe()}")
+            mark = "" if group.usable else "(too few)"
+            lines.append(f"    {mark:<10}{group.describe()}")
         for warning in self.warnings:
             lines.append(f"\n  ! {warning}")
         return "\n".join(lines)
@@ -221,7 +225,9 @@ def measure(db, *, min_samples: int = MIN_SAMPLES) -> Report:
         if est_out and est_out > 0 and row["after_bytes"] > 0:
             basis = row["estimate_basis"] or "unknown"
             ratio = row["after_bytes"] / est_out
-            size_groups.setdefault(basis, Group(basis, "size")).ratios.append(ratio)
+            size_groups.setdefault(
+                basis, Group(basis, "size", min_samples=min_samples)
+            ).ratios.append(ratio)
             all_size.append(ratio)
             counted = True
 
@@ -231,7 +237,9 @@ def measure(db, *, min_samples: int = MIN_SAMPLES) -> Report:
         if est_cpu and est_cpu > 0 and (row["cpu_seconds"] or 0) > 0:
             key = _speed_key(row)
             ratio = row["cpu_seconds"] / est_cpu
-            speed_groups.setdefault(key, Group(key, "speed")).ratios.append(ratio)
+            speed_groups.setdefault(
+                key, Group(key, "speed", min_samples=min_samples)
+            ).ratios.append(ratio)
             all_speed.append(ratio)
             counted = True
 
@@ -257,8 +265,8 @@ def measure(db, *, min_samples: int = MIN_SAMPLES) -> Report:
                 f"most individual files."
             )
 
-    usable_size = [g for g in report.size if g.n >= min_samples]
-    usable_speed = [g for g in report.speed if g.n >= min_samples]
+    usable_size = [g for g in report.size if g.usable]
+    usable_speed = [g for g in report.speed if g.usable]
     if not usable_size and not usable_speed:
         return report
 

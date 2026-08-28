@@ -711,6 +711,41 @@ class TestTheRecordItLeaves:
             1234.0 / 600
         )
 
+    def test_installing_a_held_output_does_not_write_a_second_outcome(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        """One job, one row.
+
+        Found by running the pipeline against real ffmpeg: three files produced
+        six outcomes, because the encode records one and the later install
+        recorded another. That doubles the reclaimed total on /activity and
+        gives the estimator two votes for one file -- and the duplicate carries
+        no encode time and no VMAF, because neither can be measured once the
+        source has already been replaced.
+        """
+        self.succeed(db, config, tmp_path, monkeypatch, delete=False)
+        assert db.scalar("SELECT COUNT(*) FROM outcome") == 1
+        assert db.scalar("SELECT state FROM decision") == "held"
+
+        config.safety.delete_original_on_success = True
+        monkeypatch.setattr(
+            verify, "check_structure",
+            lambda *a, **k: verify.Verification(ok=True, out_info=fake_info(size_bytes=1500)),
+        )
+        scratch = db.scalar("SELECT scratch_path FROM job")
+        Path(scratch).parent.mkdir(parents=True, exist_ok=True)
+        Path(scratch).write_bytes(b"0" * 1500)
+
+        stats = worker.install_held(db, config, progress=None)
+
+        assert stats.succeeded == 1
+        assert db.scalar("SELECT COUNT(*) FROM outcome") == 1
+        row = db.one("SELECT * FROM outcome")
+        assert row["original_deleted"] == 1
+        # The encode's own measurements survive the install untouched.
+        assert row["cpu_seconds"] == 1234.0
+        assert row["vmaf_mean"] == 94.5
+
     def test_a_downscale_is_recorded_at_the_resolution_it_ran_at(
         self, db, config, tmp_path, monkeypatch
     ):

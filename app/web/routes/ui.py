@@ -166,9 +166,15 @@ def activity(request: Request):
     """What the worker has done. Read-only, like everything else here."""
     db = request.app.state.db
 
+    # `saved` is what the encodes produced; `reclaimed` is what is actually back
+    # on the volume. They are the same number only once originals are being
+    # deleted -- during a trial batch the outputs sit in scratch and nothing has
+    # been freed yet, so a single figure would overstate it.
     totals = db.one(
         "SELECT COUNT(*) n, COALESCE(SUM(saved_bytes),0) saved, "
-        "COALESCE(SUM(cpu_seconds),0) cpu, COALESCE(SUM(est_saved_bytes),0) est "
+        "COALESCE(SUM(cpu_seconds),0) cpu, COALESCE(SUM(est_saved_bytes),0) est, "
+        "COALESCE(SUM(CASE WHEN original_deleted THEN saved_bytes ELSE 0 END),0) "
+        "  reclaimed "
         "FROM outcome"
     )
     outcomes = db.query(

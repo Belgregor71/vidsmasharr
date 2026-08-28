@@ -115,7 +115,7 @@ app/cli.py               + `app arr-guard [--apply] [--revert] [--neutralise]`
 app/web/                 /activity now breaks accuracy out per estimator model
 ```
 
-292 tests pass (Phase 4 added 60).
+293 tests pass (Phase 4 added 60, plus one regression test from the end-to-end run below).
 
 ### A bug found on the way in, and it mattered
 
@@ -179,6 +179,52 @@ preserve.
 - **A missing keepers file is reported, not ignored.** "No keepers" and "the
   keepers list did not load" are different nights of encoding.
 
+### The pipeline has now been run for real, on a workstation
+
+Every Phase 3 test mocks ffmpeg out, so until now no part of the encode path
+had ever had a real binary on the other end of it. This workstation turns out
+to have ffmpeg 8.1.2 with libvmaf, libx264 **and** libx265, which is enough to
+run the whole thing end to end with libx265 standing in for hevc_vaapi.
+
+Three synthetic 1080p H.264 files (90s, 8 Mbps, noise-heavy, eng+fra audio) and
+one already-HEVC file, then `app phase1` -> `app plan` -> `app work --execute`
+-> `app work --install-held` -> `app calibrate`. It worked:
+
+- the planner refused the HEVC file for re-encode and caught it as a remux to
+  drop the French track, which floated to the top of the queue on GB-per-hour
+  exactly as designed
+- real encodes, real libvmaf verification (93.1 and 93.2 against a target of
+  92), real atomic swap, real deletes, and the database adopted the new files
+- the outcome rows survived the decision being deleted, which is the migration
+  7 fix proving itself outside a test
+
+**It also found two bugs, which is the point.**
+
+1. **Three jobs produced six outcome rows.** `run_decision` records an outcome
+   when the encode verifies, and `install_held` recorded a *second* one when it
+   later installed the held output. That doubles the reclaimed total on
+   /activity and hands the estimator two votes per file -- and the duplicate
+   carries no encode time and no VMAF, because neither can be measured once the
+   source has been replaced. Installing is the end of the first job, not a
+   second one, so it now updates the existing row. There is a regression test.
+2. **`--min-samples` was honoured when building the correction but ignored by
+   the report**, which still printed "(too few)" for groups it had just used.
+   The threshold now travels on the group.
+
+While there: the /activity "actually reclaimed" tile counted verified-but-not
+-installed work as reclaimed. During a trial batch nothing has been freed yet,
+so it now shows what is really back on the volume and notes the rest separately.
+
+### One artifact of the test rig, not a bug
+
+The encoded outputs came out at 43 MB, under the walker's 50 MB
+`MIN_USEFUL_BYTES` floor, so the next scan did not see them and marked them
+missing. The vanish guard did not fire because it deliberately ignores roots
+with fewer than 20 known files. Neither can happen on the real library --
+`min_source_bytes` is 700 MB and ratios are around 40%, so outputs are hundreds
+of megabytes -- but it is worth knowing that a file which shrinks below 50 MB
+would lose its identity on the next walk.
+
 ### What Phase 4 has not met
 
 The guard has never talked to the real Sonarr or Radarr. Its tests drive a fake
@@ -215,11 +261,15 @@ overnight encoding to do exhaustively, so queue order decides everything.
   box -- see the top of this file
 - A movie calibration was still running when session 3 ended; its result is
   still unknown
-- 292 tests passing (Phase 1 added 72, Phase 2 added 45, Phase 3 added 60,
-  the ladder fix added 7, Phase 4 added 60)
-- **Nothing has touched the media library yet.** Phase 3 now *can* -- it is
-  the first code that deletes -- but it ships with `dry_run` on and
-  `delete_original_on_success` off, and has never been run for real.
+- 293 tests passing (Phase 1 added 72, Phase 2 added 45, Phase 3 added 60,
+  the ladder fix added 7, Phase 4 added 61)
+- **Phase 3 has now been run end to end against real ffmpeg and real libvmaf**
+  on a workstation, with libx265 standing in for hevc_vaapi. It works, and it
+  turned up two real bugs -- see session 4 below
+- **Nothing has touched the real media library yet.** Phase 3 now *can* -- it
+  is the first code that deletes -- but it ships with `dry_run` on and
+  `delete_original_on_success` off. It has now been run for real against a
+  synthetic library on a workstation; it has never been run against the NAS.
 
 ## Container status: VERIFIED WORKING (2026-08-28)
 

@@ -11,9 +11,13 @@
 
 <section class="tiles">
   <div class="tile">
-    <span class="k">{{ totals.saved | bytes }}</span>
+    <span class="k">{{ totals.reclaimed | bytes }}</span>
     <span class="l">actually reclaimed</span>
-    <span class="s">{{ totals.n }} file(s) completed</span>
+    <span class="s">
+      {{ totals.n }} file(s) completed{% if totals.saved > totals.reclaimed %};
+      {{ (totals.saved - totals.reclaimed) | bytes }} more is encoded and
+      verified but not installed{% endif %}
+    </span>
   </div>
   <div class="tile">
     <span class="k">{{ (totals.cpu / 3600) | round(1) }}h</span>
