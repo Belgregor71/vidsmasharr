@@ -12,6 +12,10 @@ config/*.db-wal
 config/*.db-shm
 config/config.yaml
 config/profiles.yaml
+# Anything *.local.yaml is a real credential file, never an example.
+# The repo is public; a URL and two API keys should not become a commit.
+*.local.yaml
+config/keepers.txt
 scratch/
 bench-out/
 *.log
