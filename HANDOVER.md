@@ -6,6 +6,100 @@ unverified ones.
 
 ---
 
+## NEXT SESSION: build Phase 4
+
+Phases 0-3 are built and pushed. Phase 4 is the last one, and one part of it
+is urgent in a way the others are not.
+
+### In flight when this session ended (2026-08-28)
+
+A targeted movie calibration was **still running**:
+
+```sh
+bench --libraries /media/movies --content-class movie --sources 2 --qp-sweep 14 17 20 --keep-clips
+```
+
+Log at `/volume1/scratch/vidsmasharr/bench-movies.log`. **Its result is not
+known.** First thing to do is read the tail of that log, then fold it in with
+the original run rather than replacing it:
+
+```sh
+sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.ladder --all-runs --verbose
+```
+
+If the movie rungs still say "no tested setting reached VMAF 95", go lower
+again (`--qp-sweep 10 12 14`) or accept that VMAF 95 is not reachable on this
+hardware for that content and lower `quality.movie_vmaf` deliberately rather
+than by accident. Do not let a rung pinned to the sweep floor pass as
+calibrated -- its size ratio is not a measurement.
+
+### Build the *arr guard FIRST -- it is the one with a deadline
+
+**Once encoding starts, Sonarr and Radarr will replace the new HEVC files with
+fresh H.264 downloads** unless they are told not to. Every night of encoding
+gets quietly undone, and worse, the *arrs delete the HEVC file to make room for
+the "upgrade". This must land before any bulk encoding, not after.
+
+The locked decision: *auto-write custom formats so HEVC is never an upgrade
+candidate -- **with a dry-run diff shown first***. That dry-run diff is not
+optional. These are the user's live media managers with their own history and
+tuning, and this is the first code in the project that writes to something
+outside our own database. Show what would change, change nothing until asked.
+
+What exists to build on: `app/identity/arr.py` already has working
+`SonarrClient` / `RadarrClient` with a `_get` helper, error handling that
+distinguishes a rejected API key from an unreachable host, and path mapping.
+It is **read-only by design** -- adding writes means adding `_post`/`_put`
+deliberately, not widening `_get`.
+
+Worth checking before designing: the *arrs are v3 API (`/api/v3/`), and custom
+formats live at `/customformat` with quality profiles at `/qualityprofile`. The
+guard needs a format that matches HEVC/x265 and a negative score on every
+profile that could otherwise upgrade over it. Confirm the actual shape against
+the running instances rather than from memory -- they are on :8989 and :7878.
+
+### Then estimator calibration
+
+Every `outcome` row carries `est_saved_bytes` alongside `saved_bytes` and
+`est_cpu_seconds` alongside `cpu_seconds`, recorded for exactly this. Once
+enough real jobs have run, compare them and correct the estimator. The
+`/activity` page already shows the ratio.
+
+Note the honest ordering problem: the planner ranks by predicted GB per hour,
+so a systematically wrong estimate does not just misreport -- it puts the wrong
+files first, for months. Calibration is worth more here than in a project where
+the queue finishes.
+
+`app/plan/estimate.py` records `estimate_basis` on every decision (which model
+produced the number), so the comparison can be done per model rather than in
+aggregate.
+
+### And the x265 keepers list
+
+`encoder.keepers_file` is already in the config and unused. Software x265 at
+~3-6 fps is hours per file, so it is only ever for a hand-picked list, and only
+in the night window. The plumbing exists: `VideoSpec` takes `libx265` with a
+preset, and the ladder builds `crf` rungs when `--include-software` is passed
+to the benchmark. Nobody has run that sweep yet.
+
+### Do not re-litigate these while building Phase 4
+
+- The *arr clients are read-only until Phase 4 deliberately makes them not.
+- Anything not provably 8-bit SDR is never rewritten. This holds for every
+  phase, and Phase 4 must not add an exception for "the *arr says it is fine".
+- A dry-run diff before writing to Sonarr/Radarr is a locked decision, not a
+  nicety.
+
+### Before any of it, if bulk encoding is close
+
+**Direct play is still unverified on both TVs.** Encode 2-3 real files at the
+final ladder settings, put them in Plex, confirm each TV says *Direct Play* not
+*Transcode*. If either transcodes, the CPU cost moves to playback and the codec
+choice has to change -- which would make the whole *arr guard moot. It is
+cheap to check and expensive to skip.
+
+---
+
 ## Where we are
 
 **Phase 0 is complete: the calibration ran on 2026-08-28 and hevc_vaapi won
@@ -17,12 +111,18 @@ here.** The library is 77% H.264 by file count and 91% by bytes, with roughly
 **8-12 TB reclaimable** against 3.9 TB free. The earlier worry that the library
 might already be x265 was wrong -- that first sampled file was unrepresentative.
 
-The constraint is now CPU time, not opportunity. ~15,400 candidate files is
-roughly **two years** of overnight encoding to do exhaustively, so queue order
-decides everything.
+The constraint is now CPU time, not opportunity. At the measured 1080p speed
+(~31 min per 45-minute episode) ~15,400 candidate files is **years** of
+overnight encoding to do exhaustively, so queue order decides everything.
+`policy.min_source_bytes` and the savings floor cut that a lot -- run
+`app plan` for the real number rather than quoting this one.
 
 - Repo: https://github.com/Belgregor71/vidsmasharr (public)
-- `main`, local and remote in sync
+- `main`, local and remote in sync at `b2bcbb5`
+- Phases 0-3 built; **Phase 4 is the next session's job** -- see the top of
+  this file
+- A movie calibration was still running when the session ended; its result is
+  unknown
 - 228 tests passing (Phase 1 added 72, Phase 2 added 45, Phase 3 added 60,
   the ladder fix added 7)
 - **Nothing has touched the media library yet.** Phase 3 now *can* -- it is
@@ -588,7 +688,12 @@ refinements worth building into Phase 2:
   :8989 (`lscr.io/linuxserver/sonarr`). Radarr :7878, Prowlarr :9696,
   Bazarr :6767, Lidarr :8686 also confirmed running.
 - **Library file counts** unknown. Needed to replace the guessed `6000` in the
-  timeline projection.
+  timeline projection -- though `app plan` now computes the real figure from
+  actual files, so this only matters for the benchmark's rough projection.
+- **Is VMAF 95 reachable for movies on this hardware?** The first sweep said
+  no (best 94.9 at the finest setting tried). If the finer sweep also says no,
+  that is a decision for the user: lower `quality.movie_vmaf`, or accept that
+  movies get the finest setting available and a modest size reduction.
 
 ## Note for the assistant
 
