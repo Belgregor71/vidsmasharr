@@ -23,8 +23,9 @@ that could invalidate everything come before the expensive work.
 | Wider TV benchmark | **finished 2026-08-29**, folded in, 160 measurements total |
 | Direct play | **VERIFIED 2026-08-30 -- Direct Play on both TVs.** No longer a blocker |
 | *arr guard | **APPLIED 2026-08-30** with `--neutralise`; second pass says "nothing to write" |
-| NAS `config.yaml` | **written 2026-08-30.** Real keys, `.179`, correct `path_map`. Two FILL MEs left: `plex.token`, `tautulli.api_key` |
-| Phase 1 on the real library | **never run -- this is now the next step** |
+| NAS `config.yaml` | **complete 2026-08-30.** Plex token, Tautulli key, both *arr keys, correct `path_map`. No FILL MEs left |
+| NAS access | **SSH + passwordless `docker` from the workstation**, see below |
+| Phase 1 on the real library | **capped run done 2026-08-30: 23,287 files, all resolved.** Full probe sweep still to run |
 | Media library | **untouched.** Nothing has been encoded, moved or deleted |
 
 ---
@@ -32,8 +33,10 @@ that could invalidate everything come before the expensive work.
 ## Git on the NAS does not work -- read before typing any command here
 
 A previous session recorded that Git Server was installed and the tree
-converted in place, and that `sudo git pull` was the way to update. **Observed
-2026-08-29: `git` is not on `PATH`, for the login user or under sudo.**
+converted in place, and that `sudo git pull` was the way to update. **Settled 2026-08-30: git was never installed.** There is no binary at
+`/usr/local/bin/git`, `/opt/bin/git`, `/usr/bin/git`, and no
+`/volume1/@appstore/Git` package directory. The earlier session wrote up the
+`git init` conversion from intent, not from a successful run.
 
 ```
 $ sudo git pull
@@ -42,11 +45,21 @@ $ sudo env "PATH=$PATH" git pull
 env: 'git': No such file or directory
 ```
 
-The second form rules out sudo's `secure_path` being the cause -- the binary is
-not on the user's own `PATH` either. Whether the package was removed, never put
-git on `PATH` for interactive shells, or the conversion was done some other way
-is unknown. **Do not trust any instruction in this file that begins with
-`git`.** If you want to settle it:
+**A second, separate cause of "command not found" on this box**, found the
+same day and worth knowing before it wastes an hour: the login user's `PATH`
+is `/usr/bin:/bin:/usr/sbin:/sbin` -- **`/usr/local/bin` is not on it.** That
+is where DSM symlinks package binaries, `docker` and `docker-compose`
+included. So `docker` looks missing to an interactive shell and works fine
+under `sudo`, which uses its own `secure_path`. `visudo` is missing from that
+`secure_path` in turn. When something is "not found" here, look for it before
+concluding it is absent:
+
+```sh
+ls -l /usr/local/bin/ | grep -i <name>
+```
+
+**Do not trust any instruction in this file that begins with `git`.** To
+re-check the git situation:
 
 ```sh
 ls -d /volume1/@appstore/Git/bin/git /opt/bin/git /usr/local/bin/git /usr/bin/git 2>/dev/null; ls -d /volume1/docker/vidsmasharr/.git 2>/dev/null
@@ -76,6 +89,58 @@ sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.ladd
 `e842d30`. The pre-patch file is at `/volume1/scratch/ladder.py.main.bak`.
 Getting git working, or re-deploying every file from one branch, is worth doing
 before the next code change.
+
+---
+
+## Driving the NAS from the workstation (set up 2026-08-30)
+
+The assistant can now run commands on the NAS directly, which is how most of
+2026-08-30 got done. Two pieces:
+
+**SSH key auth already existed.** `~/.ssh/nas_synology` on the workstation is
+authorised for `BrettGreg@192.168.0.179`. There is no `Host` entry in
+`~/.ssh/config` for it, so the key must be named explicitly:
+
+```sh
+ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179 '<command>'
+```
+
+**Passwordless sudo, scoped to the docker binary.** Everything this project
+runs needs root, and a non-interactive SSH session cannot answer a password
+prompt. The grant is one drop-in file:
+
+```
+BrettGreg ALL=(ALL) NOPASSWD: /usr/local/bin/docker
+```
+
+written as `/etc/sudoers.d/vidsmasharr-docker`, mode 440. **To revoke:**
+`sudo rm /etc/sudoers.d/vidsmasharr-docker`. Always call the binary by its full
+path -- `sudo -n /usr/local/bin/docker ...` -- since the rule matches the
+resolved command.
+
+**Be honest about what that grants.** Passwordless docker as root is
+root-equivalent: anything that can start a container can mount `/` into one. It
+is an *accident* boundary, not a security one. What it does buy is that a stray
+command outside Docker still fails.
+
+**Reading and editing `config.yaml` without a second sudo grant.** `config/` is
+a bind mount, so the file is reachable through a container:
+
+```sh
+cd /volume1/docker/vidsmasharr && sudo -n /usr/local/bin/docker compose -f docker/docker-compose.yml run --rm --entrypoint cat vidsmasharr /config/config.yaml
+```
+
+For an edit, run a script instead of `cat` -- and note `PYTHONPATH=/app` plus
+`cd /app` are needed when overriding the entrypoint, because the image's
+`ENTRYPOINT ["python3", "-m"]` is what normally puts the app on the path.
+
+**Backgrounding a long run.** `nohup` it, and redirect to the **home
+directory**, not `/volume1/scratch` -- with sudo scoped to docker, the shell
+opening the redirect is the login user and cannot write to scratch:
+
+```sh
+cd /volume1/docker/vidsmasharr && nohup sudo docker compose -f docker/docker-compose.yml run --rm -T vidsmasharr app phase1 > ~/phase1-full.log 2>&1 &
+```
 
 ---
 
@@ -150,9 +215,8 @@ That was the blocker -- if either TV had transcoded, the codec choice, the
 ladder and the *arr guard would all have needed revisiting. Nothing downstream
 is gated on it any more. Proceed to step 3.
 
-If the `hevc-test` folder or its Plex library are still around, delete both:
-they serve no further purpose and `/volume1/data/media/hevc-test` sits inside
-the media share.
+The `hevc-test` folder and its Plex library were removed afterwards, so
+nothing of the test is left in the media share.
 
 <details><summary>how it was tested, if it ever needs redoing</summary>
 
@@ -284,16 +348,40 @@ That prints the *arr's own preview of every new name and moves nothing until
 session stayed read-only. Every read-only half is confirmed. A wrong name is
 rejected and reported; it cannot damage anything.
 
-### 5. Run Phase 1 on the real library -- it never has been
+### 5. Run Phase 1 on the real library -- capped run DONE, full sweep to go
 
-```sh
-cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app phase1
+**2026-08-30, `--probe-limit 200`.** The whole run took about four minutes:
+
+```
+seen 23287  added 23287  probed 200  probe failures 0
+walk 132.0s  probe 40.4s
+plex: 24707 matched  sonarr: 21412 matched  radarr: 1858 matched
+resolved 23287/23287  (filename 11, plex 23272, sonarr 4)  unresolved 0
+0 duplicate group(s)
 ```
 
-Expect the first scan to take a long time -- it ffprobes every file once. It is
-largest-first and resumable, and `--probe-limit N` caps a run. Needs the Plex
-token and *arr keys in `config.yaml` to resolve identity from anything better
-than filenames.
+**The library is 23,287 video files**, which replaces the guessed 6000 in every
+timeline projection in this file.
+
+**`path_map` is proven, not merely inspected.** 23,272 of 23,287 files resolved
+through Plex and only 11 fell back to filenames. A wrong path map inverts that
+ratio silently, so this is the evidence step 3 was waiting for.
+
+**0 duplicate groups across 23,287 files.** Nothing is blocked by it -- `app
+plan` only holds *unresolved* groups out of the queue -- but it is low enough
+to be worth a glance if duplicate handling ever seems inert.
+
+The full sweep is the same command without the cap. At the measured 0.20s per
+probe, the remaining ~23,087 files should take **75-80 minutes**. Read-only,
+resumable, writes only to our own SQLite:
+
+```sh
+cd /volume1/docker/vidsmasharr && nohup sudo docker compose -f docker/docker-compose.yml run --rm -T vidsmasharr app phase1 > ~/phase1-full.log 2>&1 &
+```
+
+Note the redirect goes to the home directory, not `/volume1/scratch`: with
+`sudo` scoped to the docker binary only (see NAS access below), the shell
+opening the redirect is the login user, who cannot write there.
 
 ### 6. Plan, then one real encode
 
@@ -385,10 +473,33 @@ now exists, defaults to 180s, and is passed at both construction sites --
 including `load_sonarr`/`load_radarr`, which Phase 1 uses on every run and
 which would have hit the same wall at step 5 with nothing to blame.
 
-**Worth knowing before step 5:** after that 46-second `/series` call,
-`SonarrClient.matches()` makes two more calls per series. Each should be fast,
-but there will be hundreds. Phase 1 against Sonarr will look like it has hung
-long before it actually has.
+**A warning written the same day and then disproved, recorded so nobody
+reinstates it.** Reading `SonarrClient.matches()`, the assistant predicted that
+its two-calls-per-series walk would make Phase 1 look hung. It did not: the
+capped Phase 1 run finished in about four minutes, identity included. The 180s
+timeout was still the right fix -- Sonarr's `/series` really does take 46
+seconds -- but the per-series walk is not slow on this box.
+
+**Tautulli was enabled, and the key verified rather than assumed.** The
+distinction matters here specifically, because a bad key produces the same
+observable result as a good one (trap 10). The check is Tautulli's own
+`result` field:
+
+```
+tautulli HTTP 200 | result: success
+tautulli_streams() -> 0
+someone_is_watching() -> (False, 'Tautulli reports nobody watching')
+```
+
+`result: success` is the proof; `stream_count: 0` on its own is not.
+
+**Phase 1 ran on the real library for the first time**, capped at 200 probes.
+23,287 files, all of them resolved, no duplicate groups. See step 5 for the
+numbers and what they settle.
+
+**The assistant was given SSH plus passwordless docker on the NAS**, which is
+how the second half of the day got done. See "Driving the NAS from the
+workstation" near the top, including how to revoke it.
 
 The NAS tree is now hand-patched with **four** files from `ladder-robust`
 (`bench/ladder.py`, `app/config.py`, `app/identity/arr.py`,
@@ -872,18 +983,24 @@ single biggest open risk in the whole project.
    highest-value chore outstanding** — see Open Questions.
 7. **`--remove-orphans` would delete their `dockersocket` container**, which
    belongs to another stack. The orphan warning is cosmetic; ignore it.
-8. **An *arr that is slow is not an *arr that is down.** Sonarr's `/series`
+8. **`/usr/local/bin` is not on the login user's `PATH`.** It is
+   `/usr/bin:/bin:/usr/sbin:/sbin`, and DSM symlinks package binaries --
+   `docker`, `docker-compose` -- into `/usr/local/bin`. So a binary can look
+   absent to an interactive shell and work fine under `sudo`, which has its own
+   `secure_path`. `visudo` is missing from that `secure_path` in turn. Check
+   `ls -l /usr/local/bin/` before concluding anything is not installed.
+9. **An *arr that is slow is not an *arr that is down.** Sonarr's `/series`
    takes **46s** on this box (2.6MB) and Radarr's `/movie` **27s** (11.6MB) --
    both whole-library calls. The client's 30s timeout was hardcoded and
    reported the overrun exactly like an unreachable host. Fixed 2026-08-30
    (`ArrConfig.timeout`, default 180s). If an *arr call ever "times out",
    time it with curl before believing it.
-9. **An empty Tautulli `api_key` does not disable Tautulli.** It answers a bad
+10. **An empty Tautulli `api_key` does not disable Tautulli.** It answers a bad
    key with HTTP 200 and an error payload, which parses as **0 streams**, so
    `pause_when_streaming` silently decides nobody is watching. Set
    `tautulli.enabled: false` until the key is filled in -- that path returns
    None and falls back to Plex.
-10. **The rebuild command deletes the database.** `../config:/config` means
+11. **The rebuild command deletes the database.** `../config:/config` means
    the SQLite file, `profiles.yaml` and `config.yaml` all live inside the repo
    directory that `rm -rf vidsmasharr` removes. Losing it costs the whole
    calibration run and a full re-scan. Back `config/` up first -- see the
@@ -1313,9 +1430,10 @@ refinements worth building into Phase 2:
   Whatever the cause, the lesson is the one this file exists for: **a step is
   not done until it has been run on the box.** The `git init` conversion was
   written up from intent, not from a successful `git pull`.
-- **Plex token, Sonarr URL/key, Radarr URL/key** — needed for Phase 1 identity
-  resolution. Not yet gathered. They go in `config/config.yaml`, which is
-  **gitignored** — never in `config.example.yaml`.
+- ~~**Plex token, Sonarr URL/key, Radarr URL/key.**~~ **All gathered
+  2026-08-30**, along with the Tautulli key, and proven working by the Phase 1
+  run. They live in the NAS `config/config.yaml`, which is **gitignored** --
+  never in `config.example.yaml`.
 - ~~**Is Tdarr still active?**~~ **Answered 2026-08-28: no Tdarr container is
   running.** `docker ps` shows 26 containers and none is Tdarr, so the
   `@tdarr-ffmpeg` core dump is historical. Nothing else is competing for
@@ -1324,9 +1442,10 @@ refinements worth building into Phase 2:
 - ~~**Sonarr confirmed?**~~ **Answered 2026-08-28: yes**, `sonarr` is up on
   :8989 (`lscr.io/linuxserver/sonarr`). Radarr :7878, Prowlarr :9696,
   Bazarr :6767, Lidarr :8686 also confirmed running.
-- **Library file counts** unknown. Needed to replace the guessed `6000` in the
-  timeline projection -- though `app plan` now computes the real figure from
-  actual files, so this only matters for the benchmark's rough projection.
+- ~~**Library file counts** unknown.~~ **Answered 2026-08-30: 23,287 video
+  files** across `/media/tv`, `/media/movies` and `/media/Anime`. That is the
+  figure that replaces the guessed `6000` in every timeline projection in this
+  file -- roughly 3.9x, so any hour estimate derived from 6000 is badly low.
 - **Is VMAF 95 reachable for movies on this hardware?** *Still unanswered, and
   the two attempts so far could not answer it.* Both movie calibration sources
   were invalid: `Swapped (2026)` is a modern Netflix WEB-DL already too
