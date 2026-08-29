@@ -1,4 +1,4 @@
-# Handover — sessions 1–4 (2026-08-27 → 29)
+# Handover — sessions 1–5 (2026-08-27 → 29)
 
 Read this first. It records what is *verified* on the real hardware versus what
 is still assumed, so tomorrow doesn't re-litigate settled decisions or trust
@@ -16,11 +16,11 @@ that could invalidate everything come before the expensive work.
 
 | | where it stands |
 |---|---|
-| Code | Phases 0-4 built, 323 tests, `main` pushed at `e842d30` |
-| NAS repo | **now a git checkout** -- `git pull` updates it and no longer eats config |
-| TV ladder | **built and usable** -- hevc_vaapi qp 26 -> 15% of source at 1080p |
+| Code | Phases 0-4 built, 336 tests, `main` at `e842d30`, `ladder-robust` at `78541b6` |
+| NAS repo | **NOT a git checkout in any usable sense -- `git` is not on PATH.** See below |
+| TV ladder | rebuilt on 16 clips; **hevc_vaapi qp 22 -> 39% of source at 1080p** |
 | Movie ladder | **absent, deliberately** -- no valid movie calibration exists yet |
-| Wider TV benchmark | started 2026-08-29, `/volume1/scratch/vidsmasharr/bench-tv2.log` |
+| Wider TV benchmark | **finished 2026-08-29**, folded in, 160 measurements total |
 | Direct play | **STILL UNVERIFIED -- this is the blocker** |
 | *arr guard | dry run done against the live instances; **not applied** |
 | Phase 1 on the real library | **never run** |
@@ -28,29 +28,110 @@ that could invalidate everything come before the expensive work.
 
 ---
 
-### 1. Did the wider TV benchmark finish?
+## Git on the NAS does not work -- read before typing any command here
 
-Started because the 1080p TV rung is calibrated on **two clips from one show**
-(Star Wars: Skeleton Crew, a clean modern Disney+ WEB-DL). That rung is about to
-govern most of ~15,400 files, and grain-heavy older TV and animation do not
-behave like it at the same QP. The danger is not bad files -- verification fails
-closed and rejects anything under VMAF 89 -- it is **wasted CPU**, which is the
-one resource this project rations.
+A previous session recorded that Git Server was installed and the tree
+converted in place, and that `sudo git pull` was the way to update. **Observed
+2026-08-29: `git` is not on `PATH`, for the login user or under sudo.**
 
-```sh
-sudo docker ps --format '{{.Names}} {{.Status}}' | grep -i vidsmash ; sudo tail -n 40 /volume1/scratch/vidsmasharr/bench-tv2.log
+```
+$ sudo git pull
+sudo: git: command not found
+$ sudo env "PATH=$PATH" git pull
+env: 'git': No such file or directory
 ```
 
-When it is done, fold it in with the old run. New runs record their own content
-class; only the 2026-08-28 run still needs labelling:
+The second form rules out sudo's `secure_path` being the cause -- the binary is
+not on the user's own `PATH` either. Whether the package was removed, never put
+git on `PATH` for interactive shells, or the conversion was done some other way
+is unknown. **Do not trust any instruction in this file that begins with
+`git`.** If you want to settle it:
 
 ```sh
-cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.ladder --all-runs --run-class 9ece8030435f=tv --verbose --dry-run
+ls -d /volume1/@appstore/Git/bin/git /opt/bin/git /usr/local/bin/git /usr/bin/git 2>/dev/null; ls -d /volume1/docker/vidsmasharr/.git 2>/dev/null
 ```
 
-Drop `--dry-run` to write it. Expect the 1080p rung to move off 15% towards
-something less flattering once harder content is in the sample. That is the
-point of running it.
+**How code actually got deployed on 2026-08-29**, and the pattern to reuse. The
+repo is public, the image bakes the source in (`docker/Dockerfile` does
+`COPY app /app/app` and `COPY bench /app/bench`, and compose mounts only
+`config`, `scratch`, `media` and `plexdb`), so a changed file needs a rebuild
+before it runs -- editing on disk alone changes nothing:
+
+```sh
+cd /volume1/docker/vidsmasharr && sudo cp bench/ladder.py /volume1/scratch/ladder.py.main.bak && sudo curl -fsSL -o bench/ladder.py https://raw.githubusercontent.com/Belgregor71/vidsmasharr/ladder-robust/bench/ladder.py && sudo docker compose -f docker/docker-compose.yml build
+```
+
+The rebuild is quick: `pyproject.toml` is unchanged, so the apt, ffmpeg and pip
+layers all come from cache and only the two `COPY` layers re-run. Confirm the
+container is running what you think before reading any output from it --
+nothing warns you if it is not:
+
+```sh
+sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.ladder --help | grep -c robust
+```
+
+**The NAS tree is therefore hand-patched and no longer matches any branch.**
+`bench/ladder.py` came from `ladder-robust`; everything else is `main` at
+`e842d30`. The pre-patch file is at `/volume1/scratch/ladder.py.main.bak`.
+Getting git working, or re-deploying every file from one branch, is worth doing
+before the next code change.
+
+---
+
+### 1. The wider TV benchmark finished -- write the ladder
+
+**Done 2026-08-29.** 10 more TV clips (Fringe, Minx, Resident Alien, Secret
+Level, Willow), 100 measurements, folded in with the 60 from 2026-08-28 for 160
+total. It changed the answer, and it changed how the ladder is built.
+
+**The 15% at 1080p is gone.** Pooled naively the rung came out at **qp 20 and
+56% of source**, with "no tested setting reached VMAF 92" on every rung except
+SD. The cause was not the content, it was `_aggregate(..., "min")`: nine of ten
+clips reached 92 between qp 22 and 26, and the tenth (Willow S01E08, dark and
+grainy) topped out at 90.8 and never reached it at all. Because the VMAF curves
+were pooled by minimum *before* interpolating, that one clip dragged the pooled
+curve below the target everywhere and the rung fell off the end of the sweep.
+
+`bench.ladder --robust` (branch `ladder-robust`, off by default) interpolates
+each clip separately first, names and sets aside the ones that cannot reach the
+target, and takes the second-hardest of the survivors. The argument for it: a
+file harder than the rung is already caught per file by verification failing
+closed at VMAF 89, whereas tuning the whole library down to it is paid on every
+file -- and CPU is the resource this project rations.
+
+| encoder | res | strict min | `--robust` | clips used-aside |
+|---|---|---|---|---|
+| hevc_vaapi | 1080p | qp 20 / 56% | **qp 22 / 39%** / 33.0 fps | 9-1 |
+| hevc_vaapi | 720p | qp 23 / 38% | **qp 24 / 33%** / 31.7 fps | 4-0 |
+| hevc_vaapi | sd | qp 24 / 50% | qp 24 / 50% / 168.5 fps | 2-0 |
+
+On the 1080p share of the library (~8.1 TB of candidates) that is ~4.4 TB
+reclaimed after an assumed ~10% verification-reject tail, against ~3.6 TB for
+strict min. Speed cost: 33.0 fps against 37.5, so a 45-minute episode goes from
+~29 to ~33 minutes.
+
+**`profiles.yaml` has NOT been written yet** -- every run so far was
+`--dry-run`. To write it (deploy first, per the git section above):
+
+```sh
+cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.ladder --all-runs --run-class 9ece8030435f=tv --robust
+```
+
+`--run-class` now writes the label into the measurements, so this is the last
+time it is needed. Rows that already record a class are never touched.
+
+**hevc_vaapi wins by more than the sizes suggest.** At 1080p hevc_qsv could not
+reach VMAF 92 on **3 of 10 clips**; vaapi failed on 1. qsv's rung prints a
+smaller size ratio (36% vs 39%) only because it is averaged over the easier
+seven clips that survived -- which is why the ladder now prints a clips column.
+Do not read a size ratio across two rungs without checking it.
+
+**Still open on the ladder:** `--robust` sets the rung at the second-hardest of
+nine surviving clips, which is the 22nd percentile -- probably still
+conservative. Rank 2 gives qp 23 / 30% and the median gives qp 24 / 25%. Do not
+guess: run the first real batch at the current setting, then `app calibrate`
+measures the actual reject rate and the evidence decides. If nothing fails
+verification, this was too cautious.
 
 ### 2. Verify direct play on both TVs -- THE BLOCKER
 
@@ -214,6 +295,50 @@ never before. Re-run `app plan` afterwards -- the queue order is the point.
   (encoder, resolution) -- see the session 4 notes for what it cost.
 - Every backgrounded command in this file is in the `sudo sh -c '...'` form
   because the redirect must be opened by root. Do not simplify one back.
+- **VMAF still aggregates by minimum in the default path, and `--robust` is a
+  flag rather than the new default.** Both are deliberate. The min rule is
+  correct when the clips are a homogeneous sample; it is what breaks when they
+  are not, and only measured outcomes should decide which regime the real
+  library is in. Do not flip the default before `app calibrate` has a reject
+  rate to show.
+- **A size ratio is only comparable within one rung.** Under `--robust` two
+  encoders can survive different clips, so the printed ratios are averages over
+  different populations. That is what the clips column is for.
+
+---
+
+## Session 5 (2026-08-29): the wider benchmark, and what it broke
+
+Branch `ladder-robust`, 336 tests. Not merged to `main` -- it changes how every
+rung is chosen and deserves a real batch behind it first.
+
+```
+bench/ladder.py    + --robust: per-clip interpolation, second-hardest rung,
+                     clips set aside by name
+                   + size-disagreement warning (only VMAF was warned about)
+                   + a clips column, so rungs from different populations
+                     cannot be compared by accident
+                   + --run-class now persists the label into bench_result
+```
+
+Three bugs found on the way, all in code that predates this session:
+
+1. **`--run-class` labelled in memory only.** Every later rebuild had to
+   remember the flag, and forgetting was silent *and* expensive: an unlabelled
+   run falls into the `unknown` class, and an unknown group is allowed to speak
+   for **every** target -- so six TV clips would have quietly produced movie
+   rungs, the exact fabrication the content classes exist to prevent. The label
+   is now written into the measurements.
+2. **The wide-VMAF-spread branch assigned to `note` instead of appending**,
+   silently discarding the excluded-broken-clip and unknown-content-class
+   notes whenever it fired. Notes accumulate in a list now.
+3. **Size disagreement was never warned about**, only VMAF disagreement. At
+   720p two clips of the same show differ by 49 points of size at the chosen
+   setting, and the rung reported their average as though it described either.
+
+And one introduced and then fixed in the same session: `--robust` made the
+cross-encoder size comparison invalid, because each encoder sets aside its own
+clips. The clips column exists because of that.
 
 ---
 
@@ -476,8 +601,9 @@ Cause: the old rebuild one-liner backs config up with
 `cp -a vidsmasharr/config /volume1/scratch/vidsmasharr-config.bak`, and **if
 that directory already exists, `cp -a` copies *into* it** rather than over it.
 The restore step then pulls the older session-3 database back out. Anyone using
-that command must delete the backup directory first or use a dated name --
-though it is now retired, since the NAS has Git.
+that command must delete the backup directory first or use a dated name.
+(It was described as retired "since the NAS has Git". Git does not work on the
+NAS -- see the git section below -- so this command is NOT retired.)
 
 **The loss costs almost nothing.** Both movie clips were already established as
 invalid: `Swapped (2026)` is a modern Netflix WEB-DL that inflates at every
@@ -517,8 +643,8 @@ overnight encoding to do exhaustively, so queue order decides everything.
 - `main`, local and remote in sync at `e842d30`
 - **Phases 0-4 are all built**, 323 tests. What remains is running them against
   the real box -- see the top of this file
-- **The NAS is a git checkout now**, not a tarball extraction. `git pull`
-  updates it and leaves `config/` alone, which the old path never did
+- **The NAS cannot run git.** The claim that it is a working checkout was
+  wrong; see "Git on the NAS does not work" below for what to do instead
 - A movie calibration was still running when session 3 ended; its result is
   still unknown
 - 293 tests passing (Phase 1 added 72, Phase 2 added 45, Phase 3 added 60,
@@ -1081,20 +1207,17 @@ refinements worth building into Phase 2:
 
 ## Open questions for the user
 
-- ~~**Install Git on the NAS?**~~ **Done 2026-08-29.** Git Server from Package
-  Center, then the existing tree was converted in place with `git init` + a
-  remote + `git reset --hard origin/main`. `reset --hard` never touches
-  untracked or ignored files, so `config/vidsmasharr.db`, `config.yaml` and
-  `profiles.yaml` survived without being moved. Updating is now one line and it
-  no longer eats the config:
+- **Install Git on the NAS -- STILL OPEN, and it was wrongly marked done.**
+  This was recorded on 2026-08-29 as finished: Git Server from Package Center,
+  the tree converted in place with `git init` + a remote + `git reset --hard
+  origin/main`, and `sudo git pull` as the one-line update. Later the same day
+  `git` turned out not to be on `PATH` at all, so none of those commands run.
+  See "Git on the NAS does not work" near the top for the evidence and for the
+  curl-and-rebuild pattern used instead.
 
-  ```sh
-  cd /volume1/docker/vidsmasharr && sudo git pull && sudo docker compose -f docker/docker-compose.yml build
-  ```
-
-  **The rm -rf rebuild command earlier in this file is retired.** It is kept
-  only for rebuilding from nothing, and its `cp -a` backup step has the
-  copy-into-an-existing-directory trap described above.
+  Whatever the cause, the lesson is the one this file exists for: **a step is
+  not done until it has been run on the box.** The `git init` conversion was
+  written up from intent, not from a successful `git pull`.
 - **Plex token, Sonarr URL/key, Radarr URL/key** — needed for Phase 1 identity
   resolution. Not yet gathered. They go in `config/config.yaml`, which is
   **gitignored** — never in `config.example.yaml`.

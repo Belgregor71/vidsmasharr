@@ -576,3 +576,56 @@ class TestClipCounts:
         assert entry.clips_used == 3
         assert entry.clips_set_aside == 1
         assert "3-1" in ladder.render_text([entry])
+
+
+class TestRunClassPersistence:
+    """--run-class has to outlive the command that used it.
+
+    Labelling in memory only means every later rebuild must remember the flag,
+    and forgetting is silent: the run falls back to the "unknown" class, and an
+    unknown group speaks for *every* target. Six TV clips would then produce
+    movie rungs, which is the fabrication the content classes exist to stop.
+    """
+
+    def _db(self, tmp_path, rows):
+        from app.db import Database
+        db = Database(tmp_path / "t.db")
+        db.migrate()
+        for run, klass in rows:
+            db.execute(
+                "INSERT INTO bench_result (run_id, clip, encoder, quality_key, "
+                "quality_value, content_class, ok, created_at) "
+                "VALUES (?,?,?,?,?,?,1,0)",
+                (run, "c", "hevc_vaapi", "qp", 23.0, klass),
+            )
+        return db
+
+    def test_the_label_is_written_into_the_measurements(self, tmp_path):
+        db = self._db(tmp_path, [("r1", ""), ("r1", "")])
+        ladder.persist_run_classes(db, {"r1": "tv"})
+        assert db.scalar(
+            "SELECT COUNT(*) FROM bench_result WHERE content_class='tv'") == 2
+
+    def test_dry_run_writes_nothing(self, tmp_path):
+        db = self._db(tmp_path, [("r1", ""), ("r1", "")])
+        out = ladder.persist_run_classes(db, {"r1": "tv"}, dry_run=True)
+        assert db.scalar(
+            "SELECT COUNT(*) FROM bench_result WHERE content_class='tv'") == 0
+        assert any("would label" in line for line in out)
+
+    def test_a_run_that_already_recorded_its_class_is_left_alone(self, tmp_path):
+        """The flag recovers what a run asserted before the column existed. A
+        run that already answered must not be reinterpreted by a typo."""
+        db = self._db(tmp_path, [("r1", "movie"), ("r1", "movie")])
+        out = ladder.persist_run_classes(db, {"r1": "tv"})
+        assert db.scalar(
+            "SELECT COUNT(*) FROM bench_result WHERE content_class='movie'") == 2
+        assert db.scalar(
+            "SELECT COUNT(*) FROM bench_result WHERE content_class='tv'") == 0
+        assert any("left alone" in line for line in out)
+
+    def test_a_partly_labelled_run_only_fills_the_blanks(self, tmp_path):
+        db = self._db(tmp_path, [("r1", "tv"), ("r1", "")])
+        ladder.persist_run_classes(db, {"r1": "tv"})
+        assert db.scalar(
+            "SELECT COUNT(*) FROM bench_result WHERE content_class='tv'") == 2

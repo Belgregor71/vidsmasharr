@@ -732,6 +732,59 @@ def all_run_ids(db) -> list[str]:
     ]
 
 
+def persist_run_classes(
+    db, labels: dict[str, str], dry_run: bool = False
+) -> list[str]:
+    """Write a --run-class label into the measurements themselves.
+
+    Without this the label lives only for the length of one command, and every
+    later rebuild has to remember to pass it again. Forgetting is silent and
+    expensive: an unlabelled run falls into the "unknown" class, and an unknown
+    group is allowed to speak for *every* target -- so six TV clips would
+    quietly produce movie rungs, which is exactly the fabrication the content
+    classes exist to prevent.
+
+    Rows that already record a class are never touched. The flag exists to
+    recover what a run asserted before the column existed, not to reinterpret a
+    run that already answered.
+    """
+    lines: list[str] = []
+    for run, klass in labels.items():
+        blank = db.scalar(
+            "SELECT COUNT(*) FROM bench_result WHERE run_id=? "
+            "AND (content_class IS NULL OR content_class='')",
+            (run,),
+        ) or 0
+        already = db.query(
+            "SELECT content_class, COUNT(*) n FROM bench_result WHERE run_id=? "
+            "AND content_class IS NOT NULL AND content_class!='' "
+            "GROUP BY content_class",
+            (run,),
+        )
+        for row in already:
+            verb = "already records" if row["content_class"] == klass else "RECORDS"
+            lines.append(
+                f"  run {run}: {row['n']} row(s) {verb} class "
+                f"'{row['content_class']}' -- left alone"
+            )
+        if not blank:
+            lines.append(f"  run {run}: nothing to label")
+            continue
+        if dry_run:
+            lines.append(f"  run {run}: would label {blank} row(s) as {klass}")
+            continue
+        db.execute(
+            "UPDATE bench_result SET content_class=? WHERE run_id=? "
+            "AND (content_class IS NULL OR content_class='')",
+            (klass, run),
+        )
+        lines.append(
+            f"  run {run}: labelled {blank} row(s) as {klass} -- stored, so "
+            f"later rebuilds no longer need --run-class"
+        )
+    return lines
+
+
 def describe_runs(db) -> str:
     """Every stored run, with enough to tell them apart and label them.
 
@@ -803,7 +856,11 @@ def main(argv: list[str] | None = None) -> int:
                              "content_class column, e.g. --run-class "
                              "9ece8030435f=tv 4bd2f1a9=movie. --content-class was "
                              "always one value for a whole run, so this recovers "
-                             "what that run already asserted rather than guessing")
+                             "what that run already asserted rather than guessing. "
+                             "The label is written into the measurements unless "
+                             "--dry-run, so later rebuilds do not need this flag "
+                             "again; rows that already record a class are never "
+                             "touched")
     parser.add_argument("--out", default=None,
                         help="where to write profiles.yaml (default: the config dir)")
     parser.add_argument("--dry-run", action="store_true",
@@ -870,8 +927,9 @@ def main(argv: list[str] | None = None) -> int:
                 if run in labels:
                     m.content_class = labels[run]
                 measurements.append(m)
-        for run, klass in labels.items():
-            print(f"labelled run {run} as {klass}")
+        for line in persist_run_classes(db, labels, dry_run=args.dry_run):
+            print(line)
+        print()
 
     scored = [m for m in measurements if m.ok and _metric(m) is not None]
     print(f"run(s) {', '.join(run_ids)}: {len(measurements)} measurement(s), "
