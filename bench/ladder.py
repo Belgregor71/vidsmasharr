@@ -79,6 +79,13 @@ class LadderEntry:
     expected_fps: float | None
     extrapolated: bool
     samples: int
+    # Clips that actually set this rung, and clips excluded from it. Under
+    # --robust the two encoders can survive different clips, and a size ratio
+    # averaged over an easier surviving population is not comparable with one
+    # averaged over a harder one. Reported so the table cannot be misread as a
+    # like-for-like encoder comparison.
+    clips_used: int = 0
+    clips_set_aside: int = 0
     note: str = ""
 
 
@@ -405,9 +412,11 @@ def build_ladder(
         for content_class, target in group_targets.items():
             notes: list[str] = []
             set_aside: list[ClipSetting] = []
+            robust_used: list[ClipSetting] = []
             if robust:
                 per_clip = _per_clip_settings(members, target)
                 robust_quality, used, set_aside = _robust_setting(per_clip)
+                robust_used = used
                 if robust_quality is None:
                     # Nothing reached the target and shrank. Say so rather than
                     # inventing a rung; the strict path's warning is the honest
@@ -524,6 +533,9 @@ def build_ladder(
                     ) if quality_fps else None,
                     extrapolated=extrapolated,
                     samples=len(members),
+                    clips_used=(len(robust_used) if robust_used
+                                else len({m.clip for m in members})),
+                    clips_set_aside=len(set_aside),
                     note=note,
                 )
             )
@@ -604,16 +616,22 @@ def render_text(entries: list[LadderEntry]) -> str:
         return "No usable ladder entries -- every measurement failed or lacked a VMAF score."
 
     lines = ["=== quality ladder ===", ""]
-    header = f"{'encoder':<12} {'content':<8} {'res':<7} {'target':>6} {'setting':>8} {'size':>7} {'fps':>7}"
+    header = (f"{'encoder':<12} {'content':<8} {'res':<7} {'target':>6} "
+              f"{'setting':>8} {'size':>7} {'fps':>7} {'clips':>7}")
     lines.append(header)
     lines.append("-" * len(header))
     for e in sorted(entries, key=lambda x: (x.encoder, x.resolution, x.content_class)):
         size = f"{e.expected_size_ratio * 100:.0f}%" if e.expected_size_ratio else "?"
         fps = f"{e.expected_fps:.1f}" if e.expected_fps else "?"
         flag = f"{e.quality_flag}={e.quality:g}"
+        # "7-3" reads as: seven clips set this rung, three were set aside.
+        # Rungs built from different clip populations are not comparable on
+        # size, and without this the table invites exactly that comparison.
+        clips = (f"{e.clips_used}-{e.clips_set_aside}" if e.clips_set_aside
+                 else f"{e.clips_used}" if e.clips_used else "?")
         lines.append(
             f"{e.encoder:<12} {e.content_class:<8} {e.resolution:<7} "
-            f"{e.target_vmaf:>6.0f} {flag:>8} {size:>7} {fps:>7}"
+            f"{e.target_vmaf:>6.0f} {flag:>8} {size:>7} {fps:>7} {clips:>7}"
         )
     warnings = [e for e in entries if e.note]
     if warnings:

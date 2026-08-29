@@ -542,3 +542,37 @@ class TestSizeSpreadWarning:
              for q, v, r in ((20, 95.0, 0.35), (23, 93.6, 0.22), (26, 91.5, 0.14))]
         entry = build_ladder(a + b, {"tv": 92.0})[0]
         assert "points of size" not in entry.note
+
+
+class TestClipCounts:
+    """Rungs built from different clip populations are not comparable on size.
+
+    On the 2026-08-29 combined run under --robust, hevc_qsv at 1080p set aside
+    three of ten clips as unreachable and hevc_vaapi set aside one. qsv's 36%
+    was then an average over an easier seven clips than vaapi's 39% over nine,
+    and the table read as though qsv were the smaller encoder. It is not.
+    """
+
+    def test_the_rung_reports_how_many_clips_set_it(self):
+        ms = ([_c("a", q, v, r, "tv")
+               for q, v, r in ((20, 96.0, 0.40), (23, 94.0, 0.25), (26, 92.0, 0.16))]
+              + [_c("b", q, v, r, "tv")
+                 for q, v, r in ((20, 95.5, 0.42), (23, 93.5, 0.27), (26, 91.5, 0.18))])
+        entry = build_ladder(ms, {"tv": 92.0})[0]
+        assert entry.clips_used == 2
+        assert entry.clips_set_aside == 0
+        assert "2" in ladder.render_text([entry])
+
+    def test_set_aside_clips_are_counted_separately(self):
+        ok = []
+        for i, clip in enumerate(("a", "b", "c")):
+            ok += [_c(clip, q, v - i * 0.5, r, "tv")
+                   for q, v, r in ((20, 96.0, 0.40), (23, 94.0, 0.25),
+                                   (26, 92.0, 0.16))]
+        unreachable = [_c("hopeless", q, v, r, "tv")
+                       for q, v, r in ((20, 90.0, 0.62), (23, 88.0, 0.30),
+                                       (26, 85.0, 0.16))]
+        entry = build_ladder(ok + unreachable, {"tv": 92.0}, robust=True)[0]
+        assert entry.clips_used == 3
+        assert entry.clips_set_aside == 1
+        assert "3-1" in ladder.render_text([entry])
