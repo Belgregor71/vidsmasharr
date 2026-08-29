@@ -1,4 +1,4 @@
-# Handover — sessions 1–4 (2026-08-27 → 28)
+# Handover — sessions 1–4 (2026-08-27 → 29)
 
 Read this first. It records what is *verified* on the real hardware versus what
 is still assumed, so tomorrow doesn't re-litigate settled decisions or trust
@@ -6,195 +6,214 @@ unverified ones.
 
 ---
 
-## NEXT SESSION: Phase 4 is built. Run it against the real box.
+## NEXT SESSION: start here
 
-Every phase is now built. Nothing left is a coding task -- what remains is
-running this against the real library and the real *arrs, in an order chosen so
-that the cheap checks come before the expensive ones.
+**All five phases are built and every code question is answered.** What remains
+is running it against the real box, and the order matters: the cheap checks
+that could invalidate everything come before the expensive work.
 
-### 1. Read the movie calibration log first
+### State at a glance (2026-08-29)
 
-A targeted movie calibration was still running when session 3 ended and its
-result is **still unknown**:
+| | where it stands |
+|---|---|
+| Code | Phases 0-4 built, 323 tests, `main` pushed at `e842d30` |
+| NAS repo | **now a git checkout** -- `git pull` updates it and no longer eats config |
+| TV ladder | **built and usable** -- hevc_vaapi qp 26 -> 15% of source at 1080p |
+| Movie ladder | **absent, deliberately** -- no valid movie calibration exists yet |
+| Wider TV benchmark | started 2026-08-29, `/volume1/scratch/vidsmasharr/bench-tv2.log` |
+| Direct play | **STILL UNVERIFIED -- this is the blocker** |
+| *arr guard | dry run done against the live instances; **not applied** |
+| Phase 1 on the real library | **never run** |
+| Media library | **untouched.** Nothing has been encoded, moved or deleted |
+
+---
+
+### 1. Did the wider TV benchmark finish?
+
+Started because the 1080p TV rung is calibrated on **two clips from one show**
+(Star Wars: Skeleton Crew, a clean modern Disney+ WEB-DL). That rung is about to
+govern most of ~15,400 files, and grain-heavy older TV and animation do not
+behave like it at the same QP. The danger is not bad files -- verification fails
+closed and rejects anything under VMAF 89 -- it is **wasted CPU**, which is the
+one resource this project rations.
 
 ```sh
-bench --libraries /media/movies --content-class movie --sources 2 --qp-sweep 14 17 20 --keep-clips
+sudo docker ps --format '{{.Names}} {{.Status}}' | grep -i vidsmash ; sudo tail -n 40 /volume1/scratch/vidsmasharr/bench-tv2.log
 ```
 
-Log at `/volume1/scratch/vidsmasharr/bench-movies.log`. Read the tail, then
-fold it in with the original run rather than replacing it -- a movies-only run
-on its own would drop every trustworthy TV rung:
+When it is done, fold it in with the old run. New runs record their own content
+class; only the 2026-08-28 run still needs labelling:
 
 ```sh
-sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.ladder --all-runs --verbose
+cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.ladder --all-runs --run-class 9ece8030435f=tv --verbose --dry-run
 ```
 
-If the movie rungs still say "no tested setting reached VMAF 95", that is now a
-decision to make rather than a run to repeat: either go lower (`--qp-sweep 10
-12 14`) or lower `quality.movie_vmaf` deliberately. Do not let a rung pinned to
-the sweep floor pass as calibrated -- its size ratio is not a measurement. See
-the open question at the bottom of this file.
+Drop `--dry-run` to write it. Expect the 1080p rung to move off 15% towards
+something less flattering once harder content is in the sample. That is the
+point of running it.
 
-### 1b. The ladder as it now stands (2026-08-29)
+### 2. Verify direct play on both TVs -- THE BLOCKER
 
-Rebuilt from the one surviving run, labelled TV. No warnings -- every rung is
-bracketed by real measurements:
+Nothing downstream is worth doing until this is answered. If either TV
+transcodes HEVC, the CPU cost moves from one-time encoding to every playback on
+a Celeron that cannot manage it, and the codec choice, the ladder and the whole
+*arr guard need revisiting.
 
-| encoder | class | res | target | setting | size | fps |
-|---|---|---|---|---|---|---|
-| hevc_vaapi | tv | 1080p | 92 | qp=26 | **15%** | 37.5 |
-| hevc_vaapi | tv | 720p | 92 | qp=24 | 33% | 38.8 |
-| hevc_vaapi | tv | sd | 92 | qp=24 | 50% | 168.5 |
-| hevc_qsv | tv | 1080p | 92 | gq=22 | 26% | 27.9 |
-| hevc_qsv | tv | 720p | 92 | gq=22 | 54% | 29.4 |
-| hevc_qsv | tv | sd | 92 | gq=23 | 56% | 116.4 |
+**Read the verdict in Tautulli** (already running on :8181) -> Activity. It
+shows `Direct Play` / `Direct Stream` / `Transcode` *and the reason*, which is
+the part that matters.
 
-**vaapi beats qsv everywhere**, on both size and speed, which settles the
-encoder question again with cleaner numbers. 37.5 fps is about 29 minutes for a
-45-minute episode.
+**First, on each TV's Plex app: set Video Quality to Original/Maximum, and turn
+subtitles off.** A client quality cap forces a transcode whatever the file is,
+and burned-in subtitles force one on their own. This is the most common way the
+test lies to you.
 
-**There are no movie rungs, and that is correct.** `app plan` will skip films
-with "no calibrated setting for movie at 1080p" rather than queue them against
-a fabricated ratio. Films wait for a real movie calibration.
-
-**The 1080p TV rung is calibrated on two clips from ONE show.** Skeleton Crew
-is a clean modern Disney+ WEB-DL; 85% reduction is believable for that and will
-not generalise to grain-heavy older TV or to animation, and the library has a
-lot of both. The danger is not bad files -- verification fails closed and
-rejects anything under VMAF 89 -- it is **wasted CPU**, which is the one
-resource the whole project rations. Broaden it before bulk encoding:
+Make a test file at the real ladder settings -- the iGPU must be free, so not
+while a benchmark is running:
 
 ```sh
-sudo sh -c 'cd /volume1/docker/vidsmasharr && nohup docker compose -f docker/docker-compose.yml run --rm -T vidsmasharr bench --libraries /media/tv --content-class tv --sources 6 --keep-clips > /volume1/scratch/vidsmasharr/bench-tv2.log 2>&1 &'
+sudo mkdir -p /volume1/data/media/hevc-test && cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm --entrypoint ffmpeg vidsmasharr -hide_banner -nostdin -y -init_hw_device vaapi=va:/dev/dri/renderD128 -filter_hw_device va -hwaccel vaapi -hwaccel_output_format vaapi -i "/media/tv/SHOW/Season 1/EPISODE.mkv" -map 0:v:0 -c:v hevc_vaapi -rc_mode CQP -qp 26 -map 0:a:0 -c:a eac3 -b:a 640k -ac 6 -map_metadata 0 -map_chapters 0 "/media/hevc-test/directplay-test.mkv"
 ```
 
-New runs tag their own content class, so only the old run still needs
-`--run-class 9ece8030435f=tv` when combining.
+In Plex add a library of type **Other Videos** pointing at
+`/volume1/data/media/hevc-test` -- that shows files without needing to match
+them to a show, and keeps the test away from the real libraries and the *arrs.
+Play it on **both** TVs (the 1080p file on the 4K set too; different decoders,
+either can fail). Delete the library and folder afterwards.
 
-Also noted, not acted on: at 720p the two Alex Rider clips disagree on *size*
-by 5x (12.9% vs 62.1% at the same setting). VMAF disagreement is warned about;
-size disagreement is not. The 33% is an average of two very different scenes,
-so 720p savings estimates are softer than the 1080p ones.
+- **Direct Play on both** -> the last big assumption is confirmed. Proceed.
+- **Direct Stream** -> container or audio remuxed, video untouched. Acceptable,
+  but read the reason: it usually points at the audio choice.
+- **Transcode (video)** -> stop, and reopen the codec decision.
+- **Transcode (audio) only** -> the video plan survives; revisit `audio.target_codec`.
 
-### 1c. The movie run's measurements were lost, and it does not matter much
+### 3. Fix `path_map` in the NAS `config.yaml` by hand
 
-`bench.ladder --list-runs` on 2026-08-29 found **one** run, 60 measurements,
-six TV clips. The movie run's 24 measurements (Swapped x2, Pitch_Black x2, at
-three quality points across two encoders) were present in a ladder built an
-hour earlier and were gone afterwards.
+Measured against the live instances: both *arrs report paths as **`/data/media/...`**,
+their own container's view -- not the host path `/volume1/data/media/...` that
+the old example config suggested. Nothing errors when this is wrong; *arr
+matches simply never line up with our files and identity quietly falls back to
+filenames. `config.example.yaml` is fixed, but the live `config.yaml` is
+gitignored and was not touched:
 
-Most likely cause: the rebuild one-liner in this file does
-`cp -a vidsmasharr/config /volume1/scratch/vidsmasharr-config.bak`, and **if
-that backup directory already exists, `cp -a` copies *into* it** rather than
-over it. The restore step then pulls the older backup back out. Anyone using
-that command should delete the backup directory first, or use a dated name.
-Better: the NAS now has Git, so the tarball-and-rm-rf path is retired --
-see below.
-
-The loss costs almost nothing. Both movie clips were already established as
-invalid: `Swapped (2026)` is a modern Netflix WEB-DL that inflates at every
-setting, and `Pitch_Black` clip 1 was a broken comparison. Recovering them
-would only let the ladder print "movie: unusable" from real rows instead of
-from absence.
-
-### 2. Verify direct play on both TVs
-
-Still the cheapest check with the largest consequence, and still unverified.
-Encode 2-3 real files at the ladder settings, put them in Plex, confirm each TV
-says *Direct Play* rather than *Transcode*. If either transcodes, the CPU cost
-moves to playback, the codec choice has to change, and the whole *arr guard
-becomes moot. Do this before anything downstream of it.
-
-### 3. Install the *arr guard before any bulk encoding
-
-`app arr-guard` reads and reports; `--apply` is the only thing that writes.
-Run it without `--apply` first and **read the sampled match rate** -- that
-number decides whether the guard is worth applying at all:
-
-```sh
-sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app arr-guard
+```yaml
+sonarr:
+  path_map:
+    "/data/media": "/media"
+radarr:
+  path_map:
+    "/data/media": "/media"
 ```
 
-This has now been run once (2026-08-28, read-only) -- see session 4 for what
-it found, including the reason the guard would currently protect none of our
-own files. Two things in that output need a human:
+The Sonarr and Radarr API keys that were used for the read-only run live in
+`config/arr.local.yaml` **on the workstation**, which is gitignored. The NAS
+`config.yaml` needs the same two keys.
 
-- **The match rate.** An *arr scores a file by its *release name*, and our
-  re-encode keeps the original name, which usually says `x264`. The guard
-  samples the *arr's own files and reports what fraction of the HEVC ones its
-  regex would actually reach. If that is low, the guard protects little, and
-  the fix -- `{MediaInfo VideoCodec}` in the naming format plus a library
-  rename -- is the user's call. **This was designed for but never measured
-  against the real instances; the sample is how we find out.**
-- **An existing negative HEVC score.** A TRaSH-style `x265 (HD)` at -10000 is a
-  common deliberate setting, and while it stands nothing the guard adds
-  protects anything. `--neutralise` raises those to zero, opt-in.
+### 4. Install the *arr guard, before any bulk encoding
 
-**Decided 2026-08-28:** apply it *with* `--neutralise`, because Radarr's
-`x265 (HD)` at -10000 would otherwise defeat the guard for every film below 4K.
-That is now safe to do — the detector no longer confuses BR-DISK for an HEVC
-rule, so `--neutralise` leaves the disc-image penalty alone:
+Once encoding starts, Sonarr and Radarr will replace our HEVC files with fresh
+H.264 downloads and delete ours to make room. The guard writes one custom
+format matching HEVC and gives it a **positive** score on every profile.
+
+Re-read the dry run first -- it changes with the library:
 
 ```sh
-sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app arr-guard --apply --neutralise
+cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app arr-guard
 ```
 
-Every write is recorded in `guard_change`, and `app arr-guard --revert` puts it
-all back.
-
-### 3b. Turn on the rescan, and rename once
-
-The guard cannot match our files until the *arr re-reads them: our encode keeps
-the `[x264]` name. Set `notify_on_replace: true` for both services in
-config.yaml and the worker will ask the owning *arr to re-read each file it
-replaces. Nothing on disk changes.
-
-Then, after the first batch, let them rename:
+**Decided 2026-08-29: apply it with `--neutralise`.** Radarr scores its
+`x265 (HD)` format at -10000, which would otherwise defeat the guard for every
+film below 4K. That is now safe to do -- the detector no longer mistakes
+TRaSH's BR-DISK for an HEVC rule, so `--neutralise` leaves the disc-image
+penalty alone:
 
 ```sh
-sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app arr-rename
+cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app arr-guard --apply --neutralise
 ```
 
-Prints the *arr's own preview of every new name and moves nothing; `--apply`
-does it. Only items holding files we have actually replaced are considered.
+Every write is recorded in `guard_change`; `app arr-guard --revert` undoes it.
 
-**Check `path_map` first.** Measured on the live instances: both report paths
-as `/data/media/...`, which is their own container's view — *not* the NAS host
-path `/volume1/data/media/...` that `config.example.yaml` used to suggest. With
-the wrong map nothing errors; *arr matches simply never line up with our files.
-The example config is fixed, but any `config.yaml` already on the NAS is not.
-
-### 4. Run the plan and the first real encode
-
-Unchanged from before -- see Next Steps further down. `app plan`, then
-`app work --limit 1`, then `--limit 1 --execute` with deletion still off, then
-watch the output on both TVs.
-
-### 5. After a batch has run, calibrate
+**Then turn on the rescan.** Set `notify_on_replace: true` for both services in
+`config.yaml`. Without it the guard protects nothing we make: an *arr scores a
+file by its *name*, our encode keeps the `[x264]` name, and the measured
+coverage over encode candidates was **0 of 186 in Sonarr and 0 of 197 in
+Radarr**. The naming formats already end in the video codec token and renaming
+is already enabled, so the file only needs the *arr to re-read it. After the
+first batch:
 
 ```sh
-sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app calibrate
+cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app arr-rename
+```
+
+That prints the *arr's own preview of every new name and moves nothing until
+`--apply`.
+
+**Still unverified:** the three `/command` names (`RescanSeries`, `RescanMovie`,
+`RenameFiles`) have never been posted, because posting is a write and the
+session stayed read-only. Every read-only half is confirmed. A wrong name is
+rejected and reported; it cannot damage anything.
+
+### 5. Run Phase 1 on the real library -- it never has been
+
+```sh
+cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app phase1
+```
+
+Expect the first scan to take a long time -- it ffprobes every file once. It is
+largest-first and resumable, and `--probe-limit N` caps a run. Needs the Plex
+token and *arr keys in `config.yaml` to resolve identity from anything better
+than filenames.
+
+### 6. Plan, then one real encode
+
+```sh
+cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app plan
+```
+
+Films will be skipped with "no calibrated setting for movie at 1080p". That is
+correct and deliberate -- see the open question about movie sources below.
+
+Then work up to a real encode in three steps, checking each:
+
+```sh
+cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work --limit 1
+```
+
+```sh
+cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work --limit 1 --execute
+```
+
+The first prints the ffmpeg command. The second really encodes and verifies,
+leaving the output in `/scratch/encoding` because
+`delete_original_on_success` is off. Watch that file on both TVs before going
+further, then turn deletion on and use `app work --install-held` so the encode
+is not repeated.
+
+### 7. Only after a real batch: calibrate
+
+```sh
+cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app calibrate
 ```
 
 Reports and changes nothing until `--apply`. It needs 8 outcomes per model
-before it will produce a factor, so this is a step for after the first real
-batch, not before it. Re-run `app plan` afterwards -- the point is the queue
-order, and existing decisions keep the estimates they were written with.
+before it will produce a factor, so this is a step for after the first batch,
+never before. Re-run `app plan` afterwards -- the queue order is the point.
 
-### Do not re-litigate these while running it
+### Do not re-litigate these
 
 - Anything not provably 8-bit SDR is never rewritten. No exception for "the
   *arr says it is fine".
-- The guard's score is **positive**, and that is not a typo. Both *arrs compare
-  a candidate release's custom-format score against the score of the file
-  already on disk, so a high score on HEVC is what protects it. A negative
-  score would make every H.264 release an upgrade over a night of work. The
-  handover that specified Phase 4 said "negative"; it was wrong, and the code
-  and its tests now pin the right sign.
-- A dry-run diff before writing to Sonarr/Radarr is locked, and there is no
-  flag to skip it.
-- `app/identity/arr.py` stays read-only. The write verbs live in
-  `app/guard/arr_guard.py`, in the one module with a reason for them.
+- **The guard's score is positive**, and that is not a typo. Both *arrs compare
+  a candidate release's score against the score of the file already on disk, so
+  a high score on HEVC is what protects it. A negative score would make every
+  H.264 release an upgrade over a night of work. There is a test named for it.
+- A dry-run diff before writing to Sonarr/Radarr is locked; there is no flag to
+  skip it.
+- `app/identity/arr.py` stays read-only. Write verbs live in `app/guard/`.
+- The ladder groups by content class. Do not "simplify" that back to
+  (encoder, resolution) -- see the session 4 notes for what it cost.
+- Every backgrounded command in this file is in the `sudo sh -c '...'` form
+  because the redirect must be opened by root. Do not simplify one back.
 
 ---
 
@@ -417,6 +436,56 @@ items, locating a file by folder, previewing renames -- are all confirmed. If a
 command name is wrong the *arr rejects it and the error is reported; it cannot
 damage anything.
 
+### The ladder as rebuilt on 2026-08-29
+
+From the one surviving run, labelled TV. No warnings left -- every rung is
+bracketed by real measurements:
+
+| encoder | class | res | target | setting | size | fps |
+|---|---|---|---|---|---|---|
+| hevc_vaapi | tv | 1080p | 92 | qp=26 | **15%** | 37.5 |
+| hevc_vaapi | tv | 720p | 92 | qp=24 | 33% | 38.8 |
+| hevc_vaapi | tv | sd | 92 | qp=24 | 50% | 168.5 |
+| hevc_qsv | tv | 1080p | 92 | gq=22 | 26% | 27.9 |
+| hevc_qsv | tv | 720p | 92 | gq=22 | 54% | 29.4 |
+| hevc_qsv | tv | sd | 92 | gq=23 | 56% | 116.4 |
+
+**vaapi beats qsv everywhere**, on both size and speed, settling the encoder
+question again with cleaner numbers. 37.5 fps is about **29 minutes for a
+45-minute episode**.
+
+**No movie rungs at all, which is correct.** `app plan` will skip films rather
+than queue them against a fabricated ratio.
+
+Two caveats recorded with it:
+
+- **The 1080p rung is two clips from one show.** See step 1 of the brief.
+- **At 720p the two Alex Rider clips disagree on *size* by 5x** (12.9% vs 62.1%
+  at the same setting). VMAF disagreement is warned about; size disagreement is
+  not. The 33% is an average of two very different scenes, so 720p savings
+  estimates are softer than the 1080p ones. Possible future warning.
+
+### The movie run's measurements were lost
+
+`bench.ladder --list-runs` on 2026-08-29 found **one** run: 60 measurements,
+six TV clips. The movie run's 24 measurements (Swapped x2, Pitch_Black x2, at
+three quality points across two encoders) were present in a ladder built an
+hour earlier and gone afterwards.
+
+Cause: the old rebuild one-liner backs config up with
+`cp -a vidsmasharr/config /volume1/scratch/vidsmasharr-config.bak`, and **if
+that directory already exists, `cp -a` copies *into* it** rather than over it.
+The restore step then pulls the older session-3 database back out. Anyone using
+that command must delete the backup directory first or use a dated name --
+though it is now retired, since the NAS has Git.
+
+**The loss costs almost nothing.** Both movie clips were already established as
+invalid: `Swapped (2026)` is a modern Netflix WEB-DL that inflates at every
+setting, and `Pitch_Black` clip 1 was a broken comparison (75-78 VMAF across
+the whole sweep while its output ran to 1.9x the source). Recovering them would
+only let the ladder print "movie: unusable" from real rows instead of from
+absence.
+
 ### What Phase 4 has not met
 
 The guard has never *written* to the real Sonarr or Radarr -- the run above was
@@ -445,9 +514,11 @@ overnight encoding to do exhaustively, so queue order decides everything.
 `app plan` for the real number rather than quoting this one.
 
 - Repo: https://github.com/Belgregor71/vidsmasharr (public)
-- `main`, local and remote in sync
-- **Phases 0-4 are all built.** What remains is running them against the real
-  box -- see the top of this file
+- `main`, local and remote in sync at `e842d30`
+- **Phases 0-4 are all built**, 323 tests. What remains is running them against
+  the real box -- see the top of this file
+- **The NAS is a git checkout now**, not a tarball extraction. `git pull`
+  updates it and leaves `config/` alone, which the old path never did
 - A movie calibration was still running when session 3 ended; its result is
   still unknown
 - 293 tests passing (Phase 1 added 72, Phase 2 added 45, Phase 3 added 60,
@@ -1038,10 +1109,16 @@ refinements worth building into Phase 2:
 - **Library file counts** unknown. Needed to replace the guessed `6000` in the
   timeline projection -- though `app plan` now computes the real figure from
   actual files, so this only matters for the benchmark's rough projection.
-- **Is VMAF 95 reachable for movies on this hardware?** The first sweep said
-  no (best 94.9 at the finest setting tried). If the finer sweep also says no,
-  that is a decision for the user: lower `quality.movie_vmaf`, or accept that
-  movies get the finest setting available and a modest size reduction.
+- **Is VMAF 95 reachable for movies on this hardware?** *Still unanswered, and
+  the two attempts so far could not answer it.* Both movie calibration sources
+  were invalid: `Swapped (2026)` is a modern Netflix WEB-DL already too
+  efficient to beat (it inflates at every setting), and `Pitch_Black` clip 1
+  was a broken comparison. **Do not sweep lower on sources like those** -- it
+  only makes bigger files. The next movie calibration needs a **fat H.264
+  BluRay rip at 8-15 Mbps**, the kind the planner would actually queue. The
+  census says 91% of library bytes are H.264, so such files exist in quantity;
+  the sampler just did not pick one. Only once a valid source has been measured
+  is "lower `quality.movie_vmaf`" a decision worth taking.
 - **Does the *arr guard's custom format actually match our re-encoded files?**
   It matches on the release title, and our encode keeps the original name,
   which usually says `x264`. `app arr-guard` samples the live instances and
