@@ -42,6 +42,22 @@ WIDE_SPREAD_VMAF = 3.0
 # split, so they stand in for every target and say so.
 UNKNOWN_CLASS = "unknown"
 
+# --robust: how many clips must reach the target before the ladder is allowed to
+# discount the hardest of them. With two clips, "second lowest" is simply "the
+# easier one", which is not robustness -- it is picking the flattering number.
+ROBUST_MIN_CLIPS = 3
+
+# --robust aggregates the per-clip settings by rank rather than by strict
+# minimum. Rank 1 is the second-lowest: it absorbs a single unrepresentative
+# clip without handing the rung to the easiest content in the sample.
+ROBUST_RANK = 1
+
+# Clips whose size at the chosen setting differ by more than this are telling us
+# the savings estimate cannot be trusted per file, only in aggregate. VMAF
+# disagreement was already warned about; size disagreement was not, and on the
+# 2026-08-29 run two clips of the same show differed by 49 points.
+WIDE_SPREAD_SIZE = 0.25
+
 # A clip whose output is LARGER than its source and which still scores badly is
 # not hard content -- it is a broken comparison. You cannot spend more bits than
 # the original and lose that much quality; the reference and the distorted
@@ -222,11 +238,95 @@ def _drop_broken_clips(
     return [m for m in members if m.clip not in broken], broken
 
 
+@dataclass
+class ClipSetting:
+    """What one calibration clip, on its own, says the setting should be."""
+    clip: str
+    quality: float
+    size_at_quality: float | None
+    ceiling: float          # the best VMAF this clip reached anywhere in the sweep
+    reachable: bool         # did it reach the target inside the sweep at all?
+    inflates: bool          # is its output still >= the source at its own setting?
+
+
+def _per_clip_settings(
+    members: list[Measurement], target: float
+) -> list[ClipSetting]:
+    """Interpolate each clip separately, instead of pooling the curves first.
+
+    The order matters more than it looks. Aggregating VMAF across clips and
+    *then* interpolating means a single clip that never reaches the target
+    drags the pooled curve below it at every setting, and the rung falls off
+    the end of the sweep -- it reports "no tested setting reached VMAF 92" even
+    though most clips reached it comfortably. Interpolating per clip first
+    keeps that clip's failure attributable to that clip, where it can be named
+    and set aside, rather than silently deciding the rung for everything else.
+    """
+    by_clip: dict[str, list[Measurement]] = {}
+    for m in members:
+        by_clip.setdefault(m.clip, []).append(m)
+
+    settings: list[ClipSetting] = []
+    for clip, rows in sorted(by_clip.items()):
+        vmaf = [(m.quality, v) for m in rows if (v := _metric(m)) is not None]
+        if len(vmaf) < 2:
+            continue
+        size = [(m.quality, m.size_ratio) for m in rows if m.size_ratio]
+        quality, extrapolated = _interpolate(vmaf, target)
+        ceiling = max(v for _, v in vmaf)
+        at_quality = _expected_at(size, quality) if size else None
+        settings.append(
+            ClipSetting(
+                clip=clip,
+                quality=quality,
+                size_at_quality=at_quality,
+                ceiling=ceiling,
+                reachable=not (extrapolated and ceiling < target),
+                inflates=at_quality is not None and at_quality > MAX_USEFUL_SIZE_RATIO,
+            )
+        )
+    return settings
+
+
+def _robust_setting(
+    settings: list[ClipSetting],
+) -> tuple[float | None, list[ClipSetting], list[ClipSetting]]:
+    """The rung setting under --robust, plus the clips it set aside and used.
+
+    Returns (quality, used, excluded). Excluded clips are those that never
+    reach the target inside the sweep, and those whose output is still no
+    smaller than the source at their own target setting -- the first is a file
+    verification will reject, the second is a file not worth encoding. Neither
+    is a fact about the setting the rest of the library should run at.
+
+    Below ROBUST_MIN_CLIPS survivors this falls back to the strict minimum,
+    because trimming the hardest of two clips just picks the easier one.
+    """
+    excluded = [s for s in settings if not s.reachable or s.inflates]
+    used = [s for s in settings if s.reachable and not s.inflates]
+    if not used:
+        return None, [], excluded
+
+    ordered = sorted(used, key=lambda s: s.quality)
+    if len(ordered) < ROBUST_MIN_CLIPS:
+        return ordered[0].quality, used, excluded
+    # Clamp rather than index blindly: the rank is a tuning constant and the
+    # clip count comes from whatever the benchmark happened to sample, so the
+    # two can cross. Falling back to the hardest clip is the safe direction.
+    return ordered[min(ROBUST_RANK, len(ordered) - 1)].quality, used, excluded
+
+
 def build_ladder(
     measurements: list[Measurement],
     targets: dict[str, float],
+    robust: bool = False,
 ) -> list[LadderEntry]:
-    """targets maps content_class -> target VMAF, e.g. {"movie": 95, "tv": 92}."""
+    """targets maps content_class -> target VMAF, e.g. {"movie": 95, "tv": 92}.
+
+    `robust` interpolates each clip separately and takes the second-lowest of
+    the resulting settings, rather than pooling the VMAF curves by minimum. See
+    _robust_setting for why, and what it sets aside.
+    """
     from app.work.ffmpeg_cmd import QUALITY_FLAG
 
     usable = [m for m in measurements if m.ok and _metric(m) is not None]
@@ -303,15 +403,42 @@ def build_ladder(
             continue
 
         for content_class, target in group_targets.items():
-            quality, extrapolated = _interpolate(quality_vmaf, target)
+            notes: list[str] = []
+            set_aside: list[ClipSetting] = []
+            if robust:
+                per_clip = _per_clip_settings(members, target)
+                robust_quality, used, set_aside = _robust_setting(per_clip)
+                if robust_quality is None:
+                    # Nothing reached the target and shrank. Say so rather than
+                    # inventing a rung; the strict path's warning is the honest
+                    # answer here.
+                    quality, extrapolated = _interpolate(quality_vmaf, target)
+                else:
+                    quality, extrapolated = robust_quality, False
+                    if len(used) >= ROBUST_MIN_CLIPS:
+                        hardest = min(used, key=lambda s: s.quality)
+                        notes.append(
+                            f"robust: set by the second-hardest of {len(used)} "
+                            f"clip(s); {hardest.clip} alone would have set it to "
+                            f"{hardest.quality:g}. Files harder than this rung are "
+                            f"caught per file by verification, not by tuning the "
+                            f"whole library down to them."
+                        )
+                    else:
+                        notes.append(
+                            f"robust: only {len(used)} clip(s) reached the target, "
+                            f"below the {ROBUST_MIN_CLIPS} needed to discount one, "
+                            f"so this rung is still set by the hardest of them."
+                        )
+            else:
+                quality, extrapolated = _interpolate(quality_vmaf, target)
             # Hardware encoders take an integer QP. Floor rather than round, so
             # measurement noise can only ever move us toward higher quality --
             # this setting is about to be applied to thousands of files.
             if encoder.endswith(("_vaapi", "_qsv")):
                 quality = float(int(quality))
-            note = ""
             if broken:
-                note = (
+                notes.append(
                     f"excluded {len(broken)} clip(s) whose output was larger than "
                     f"the source and still scored below {BROKEN_CLIP_VMAF:g} VMAF: "
                     f"{', '.join(sorted(broken))}. That is a misaligned comparison, "
@@ -319,19 +446,45 @@ def build_ladder(
                     f"Left in, it would have set this rung on its own, because "
                     f"VMAF is aggregated by minimum."
                 )
+            unreachable = [s for s in set_aside if not s.reachable]
+            if unreachable:
+                notes.append(
+                    "set aside as unreachable (best VMAF in the whole sweep was "
+                    "below the target, so no setting satisfies them and "
+                    "verification will reject them): "
+                    + ", ".join(f"{s.clip} (ceiling {s.ceiling:.1f})"
+                                for s in sorted(unreachable, key=lambda s: s.clip))
+                    + "."
+                )
+            inflating = [s for s in set_aside if s.reachable and s.inflates]
+            if inflating:
+                notes.append(
+                    "set aside as not worth encoding (already efficient -- output "
+                    "is no smaller than the source at the setting they need): "
+                    + ", ".join(f"{s.clip} ({s.size_at_quality * 100:.0f}%)"
+                                for s in sorted(inflating, key=lambda s: s.clip))
+                    + "."
+                )
             if group_class == UNKNOWN_CLASS:
-                extra_class = (
+                notes.append(
                     "measured before the content class was recorded, so this rung "
                     "stands in for every target and may be pooling movie and TV "
                     "sources. Re-run the benchmark to separate them."
                 )
-                note = f"{note} {extra_class}".strip() if note else extra_class
             vmaf_spread = _spread(raw_vmaf, quality)
             if vmaf_spread >= WIDE_SPREAD_VMAF:
-                note = (
+                notes.append(
                     f"the calibration clips disagreed by {vmaf_spread:.0f} VMAF at "
                     f"this setting, so it is tuned to the hardest of them. Benchmark "
                     f"more sources to narrow it."
+                )
+            size_spread = _spread(raw_size, quality)
+            if size_spread >= WIDE_SPREAD_SIZE:
+                notes.append(
+                    f"the calibration clips disagreed by {size_spread * 100:.0f} "
+                    f"points of size at this setting, so the expected size ratio is "
+                    f"an average of very different content. Per-file savings "
+                    f"estimates from this rung are soft; the aggregate is sound."
                 )
             if extrapolated:
                 achieved = max(v for _, v in quality_vmaf)
@@ -350,7 +503,8 @@ def build_ladder(
                         "every tested setting beat the target; the true optimum is "
                         "likely coarser. Re-run the sweep with higher QP values."
                     )
-                note = f"{note} {extra}".strip() if note else extra
+                notes.append(extra)
+            note = " ".join(notes)
             entries.append(
                 LadderEntry(
                     encoder=encoder,
@@ -636,6 +790,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="where to write profiles.yaml (default: the config dir)")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the ladder without writing profiles.yaml")
+    parser.add_argument("--robust", action="store_true",
+                        help="interpolate each clip separately and set the rung "
+                             "from the second-hardest of them, instead of pooling "
+                             "the VMAF curves by minimum. Clips that never reach "
+                             "the target, or that do not shrink at the setting "
+                             "they need, are named and set aside rather than "
+                             "deciding the rung for the whole library. Off by "
+                             "default: it trades a wider verification-reject tail "
+                             "for far better savings on the bulk, and that is a "
+                             "judgement call, not a bug fix")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="show each clip's measurements before aggregating, "
                              "which is how you tell a hard clip from a bad one")
@@ -700,7 +864,7 @@ def main(argv: list[str] | None = None) -> int:
         print()
 
     targets = {"movie": config.quality.movie_vmaf, "tv": config.quality.tv_vmaf}
-    entries = build_ladder(measurements, targets)
+    entries = build_ladder(measurements, targets, robust=args.robust)
     if not entries:
         print("Nothing usable in that run.")
         return 1

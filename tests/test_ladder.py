@@ -441,3 +441,104 @@ class TestBrokenClips:
         entries = build_ladder(hard, {"tv": 92.0})
         assert entries
         assert "excluded" not in entries[0].note
+
+
+class TestRobustMode:
+    """--robust: interpolate per clip, then discount the hardest of them.
+
+    The 2026-08-29 combined run is the case this exists for. Ten TV clips, nine
+    of which reached VMAF 92 somewhere between QP 22 and 26. The tenth (a dark,
+    grain-heavy Willow episode) topped out at 90.8 and never reached it at all.
+    Pooling the VMAF curves by minimum first meant the pooled curve never
+    crossed 92 either, so the rung fell off the end of the sweep to QP 20 and
+    56% of source -- roughly a third of the reclaim the other nine would give.
+    """
+
+    def _sweep(self, clip, offset=0.0, ratio_scale=1.0):
+        """A clip that clears 92 near QP 26, shifted by `offset` VMAF points."""
+        return [_c(clip, q, v + offset, r * ratio_scale, "tv")
+                for q, v, r in ((20, 96.0, 0.40), (23, 94.0, 0.25),
+                                (26, 92.0, 0.16), (29, 88.0, 0.11))]
+
+    def test_default_is_unchanged(self):
+        ms = self._sweep("a") + self._sweep("b", offset=-1.0)
+        assert (build_ladder(ms, {"tv": 92.0})[0].quality
+                == build_ladder(ms, {"tv": 92.0}, robust=False)[0].quality)
+
+    def test_an_unreachable_clip_no_longer_decides_the_rung(self):
+        reachable = (self._sweep("a") + self._sweep("b", offset=-0.5)
+                     + self._sweep("c", offset=-1.0))
+        # Tops out below the target at every setting, exactly like Willow_1.
+        unreachable = [_c("hopeless", q, v, r, "tv")
+                       for q, v, r in ((20, 90.8, 0.62), (23, 88.0, 0.30),
+                                       (26, 85.0, 0.16), (29, 80.8, 0.10))]
+        ms = reachable + unreachable
+
+        strict = build_ladder(ms, {"tv": 92.0})[0]
+        robust = build_ladder(ms, {"tv": 92.0}, robust=True)[0]
+
+        # Strict pools the curves, never crosses the target, and pins to the
+        # finest setting tried -- reporting a size ratio it never calibrated.
+        assert strict.quality == 20
+        assert strict.extrapolated is True
+        # Robust sets the clip aside by name and calibrates on the rest.
+        assert robust.quality > strict.quality
+        assert robust.extrapolated is False
+        assert "hopeless" in robust.note
+        assert "unreachable" in robust.note
+        assert robust.expected_size_ratio < strict.expected_size_ratio
+
+    def test_below_the_minimum_clip_count_it_stays_on_the_hardest(self):
+        """Trimming the harder of two clips is not robustness, it is picking
+        the flattering number. Under ROBUST_MIN_CLIPS it must not trim."""
+        ms = self._sweep("a") + self._sweep("b", offset=-2.0)
+        entry = build_ladder(ms, {"tv": 92.0}, robust=True)[0]
+        hardest = min(s.quality for s in ladder._per_clip_settings(ms, 92.0))
+        assert entry.quality == float(int(hardest))
+        assert "below the 3 needed" in entry.note
+
+    def test_a_rank_beyond_the_clip_count_does_not_crash(self, monkeypatch):
+        """ROBUST_RANK is a tuning constant and the clip count comes from
+        whatever the benchmark sampled; the two can cross. Found by sweeping
+        the rank to see how far the rung moves."""
+        monkeypatch.setattr(ladder, "ROBUST_RANK", 99)
+        ms = (self._sweep("a") + self._sweep("b", offset=-0.5)
+              + self._sweep("c", offset=-1.0))
+        entry = build_ladder(ms, {"tv": 92.0}, robust=True)[0]
+        # Clamped to the easiest clip rather than raising IndexError.
+        assert entry.quality > 0
+
+    def test_a_clip_that_cannot_shrink_at_its_own_setting_is_set_aside(self):
+        """Already-efficient content: it reaches the target, but only by
+        spending as many bits as the source. That is a file not worth
+        encoding, not evidence about the setting for files that are."""
+        ok = (self._sweep("a") + self._sweep("b", offset=-0.5)
+              + self._sweep("c", offset=-1.0))
+        efficient = self._sweep("fat", offset=-1.5, ratio_scale=5.0)
+        entry = build_ladder(ok + efficient, {"tv": 92.0}, robust=True)[0]
+        assert "fat" in entry.note
+        assert "not worth encoding" in entry.note
+
+
+class TestSizeSpreadWarning:
+    def test_clips_disagreeing_on_size_are_warned_about(self):
+        """VMAF disagreement was already warned about; size disagreement was
+        not. On the 2026-08-29 run two clips of the same show differed by 49
+        points of size at the chosen setting, and the rung reported their
+        average as if it described either of them."""
+        thin = [_c("thin", q, v, r, "tv")
+                for q, v, r in ((20, 95.2, 0.33), (23, 93.9, 0.13),
+                                (26, 91.9, 0.07))]
+        fat = [_c("fat", q, v, r, "tv")
+               for q, v, r in ((20, 95.0, 1.03), (23, 93.6, 0.62),
+                               (26, 91.5, 0.39))]
+        entry = build_ladder(thin + fat, {"tv": 92.0})[0]
+        assert "points of size" in entry.note
+
+    def test_clips_that_agree_on_size_are_not_warned_about(self):
+        a = [_c("a", q, v, r, "tv")
+             for q, v, r in ((20, 95.2, 0.33), (23, 93.9, 0.20), (26, 91.9, 0.12))]
+        b = [_c("b", q, v, r, "tv")
+             for q, v, r in ((20, 95.0, 0.35), (23, 93.6, 0.22), (26, 91.5, 0.14))]
+        entry = build_ladder(a + b, {"tv": 92.0})[0]
+        assert "points of size" not in entry.note
