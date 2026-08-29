@@ -16,14 +16,15 @@ that could invalidate everything come before the expensive work.
 
 | | where it stands |
 |---|---|
-| Code | Phases 0-4 built, 336 tests, `main` at `e842d30`, `ladder-robust` at `78541b6` |
+| Code | Phases 0-4 built, 338 tests, `main` at `e842d30`, `ladder-robust` at `b4a4b4a` |
 | NAS repo | **NOT a git checkout in any usable sense -- `git` is not on PATH.** See below |
 | TV ladder | **written to `profiles.yaml` 2026-08-29** -- hevc_vaapi qp 22 -> 39% at 1080p |
 | Movie ladder | **absent, deliberately** -- no valid movie calibration exists yet |
 | Wider TV benchmark | **finished 2026-08-29**, folded in, 160 measurements total |
 | Direct play | **VERIFIED 2026-08-30 -- Direct Play on both TVs.** No longer a blocker |
-| *arr guard | dry run done against the live instances; **not applied** |
-| Phase 1 on the real library | **never run** |
+| *arr guard | **APPLIED 2026-08-30** with `--neutralise`; second pass says "nothing to write" |
+| NAS `config.yaml` | **written 2026-08-30.** Real keys, `.179`, correct `path_map`. Two FILL MEs left: `plex.token`, `tautulli.api_key` |
+| Phase 1 on the real library | **never run -- this is now the next step** |
 | Media library | **untouched.** Nothing has been encoded, moved or deleted |
 
 ---
@@ -190,7 +191,20 @@ either can fail). Delete the library and folder afterwards.
 
 </details>
 
-### 3. Fix `path_map` in the NAS `config.yaml` by hand
+### 3. Fix `path_map` in the NAS `config.yaml` by hand -- DONE
+
+**Written 2026-08-30**, whole file regenerated from `config.example.yaml`
+rather than patched. What that run settled:
+
+- **The NAS is `192.168.0.179`.** The example config's `192.168.1.10` is a
+  placeholder on the wrong subnet -- it was never a real address here.
+- The file is `root:root`; every later read of it needs `sudo`. That is the
+  right state (it holds four credentials) and the container runs as root, so
+  it reads it regardless.
+- **Still FILL ME: `plex.token` and `tautulli.api_key`.** Phase 1 needs the
+  Plex token for identity, so gather it before step 5.
+
+The original reasoning, still correct:
 
 Measured against the live instances: both *arrs report paths as **`/data/media/...`**,
 their own container's view -- not the host path `/volume1/data/media/...` that
@@ -212,7 +226,21 @@ The Sonarr and Radarr API keys that were used for the read-only run live in
 `config/arr.local.yaml` **on the workstation**, which is gitignored. The NAS
 `config.yaml` needs the same two keys.
 
-### 4. Install the *arr guard, before any bulk encoding
+### 4. Install the *arr guard, before any bulk encoding -- DONE
+
+**Applied 2026-08-30** with `--apply --neutralise`. Nine writes: the custom
+format created in both services, +1000 on six Sonarr profiles and two Radarr
+ones, and Radarr's `x265 (HD)` raised -10000 -> 0 in `HD-1080p`. BR-DISK, MA
+and Special Edition were left alone, which is the 08-29 detector fix holding.
+A second `app arr-guard` reports **"already as it should be; nothing to
+write"** on both, so it is idempotent and the writes stuck.
+
+`notify_on_replace: true` is set for both services in the new `config.yaml`.
+`app arr-rename` is still a step for *after* the first batch, and the three
+`/command` names are still unposted -- the guard writes custom formats and
+quality profiles, not commands.
+
+The original reasoning, still correct:
 
 Once encoding starts, Sonarr and Radarr will replace our HEVC files with fresh
 H.264 downloads and delete ours to make room. The guard writes one custom
@@ -326,6 +354,45 @@ never before. Re-run `app plan` afterwards -- the queue order is the point.
 - **A size ratio is only comparable within one rung.** Under `--robust` two
   encoders can survive different clips, so the printed ratios are averages over
   different populations. That is what the clips column is for.
+
+---
+
+## Session 6 (2026-08-30): the box says yes
+
+Four things happened on the real hardware, and none of them was code for its
+own sake.
+
+**Direct play passed on both TVs.** See step 2 of the brief. That was the last
+assumption the whole plan rested on.
+
+**The NAS `config.yaml` was written for the first time**, whole rather than
+patched, from `config.example.yaml`. It carries the real Sonarr and Radarr
+keys, the correct `path_map`, and `192.168.0.179` -- the example's
+`192.168.1.10` was a placeholder on a subnet this network does not use. Two
+values are still blank and marked FILL ME: `plex.token` and
+`tautulli.api_key`.
+
+**The guard was applied.** First writes this project has ever made outside
+itself. Idempotent on the second pass.
+
+**One real bug fell out of it, and it was not in the guard.** `app arr-guard`
+began timing out on calls that had worked twenty minutes earlier. Timing them
+with curl from the NAS shell settled it in one step: Sonarr's `/series` takes
+46 seconds here, Radarr's `/movie` 27, and the client's timeout was hardcoded
+at 30. Sonarr could never have worked; Radarr worked about half the time,
+which is why the first run passed and the second did not. `ArrConfig.timeout`
+now exists, defaults to 180s, and is passed at both construction sites --
+including `load_sonarr`/`load_radarr`, which Phase 1 uses on every run and
+which would have hit the same wall at step 5 with nothing to blame.
+
+**Worth knowing before step 5:** after that 46-second `/series` call,
+`SonarrClient.matches()` makes two more calls per series. Each should be fast,
+but there will be hundreds. Phase 1 against Sonarr will look like it has hung
+long before it actually has.
+
+The NAS tree is now hand-patched with **four** files from `ladder-robust`
+(`bench/ladder.py`, `app/config.py`, `app/identity/arr.py`,
+`app/guard/arr_guard.py`); everything else is `main` at `e842d30`.
 
 ---
 
@@ -805,7 +872,18 @@ single biggest open risk in the whole project.
    highest-value chore outstanding** — see Open Questions.
 7. **`--remove-orphans` would delete their `dockersocket` container**, which
    belongs to another stack. The orphan warning is cosmetic; ignore it.
-9. **The rebuild command deletes the database.** `../config:/config` means
+8. **An *arr that is slow is not an *arr that is down.** Sonarr's `/series`
+   takes **46s** on this box (2.6MB) and Radarr's `/movie` **27s** (11.6MB) --
+   both whole-library calls. The client's 30s timeout was hardcoded and
+   reported the overrun exactly like an unreachable host. Fixed 2026-08-30
+   (`ArrConfig.timeout`, default 180s). If an *arr call ever "times out",
+   time it with curl before believing it.
+9. **An empty Tautulli `api_key` does not disable Tautulli.** It answers a bad
+   key with HTTP 200 and an error payload, which parses as **0 streams**, so
+   `pause_when_streaming` silently decides nobody is watching. Set
+   `tautulli.enabled: false` until the key is filled in -- that path returns
+   None and falls back to Plex.
+10. **The rebuild command deletes the database.** `../config:/config` means
    the SQLite file, `profiles.yaml` and `config.yaml` all live inside the repo
    directory that `rm -rf vidsmasharr` removes. Losing it costs the whole
    calibration run and a full re-scan. Back `config/` up first -- see the
