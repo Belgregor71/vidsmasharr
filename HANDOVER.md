@@ -25,7 +25,10 @@ that could invalidate everything come before the expensive work.
 | *arr guard | **APPLIED 2026-08-30** with `--neutralise`; second pass says "nothing to write" |
 | NAS `config.yaml` | **complete 2026-08-30.** Plex token, Tautulli key, both *arr keys, correct `path_map`. No FILL MEs left |
 | NAS access | **SSH + passwordless `docker` from the workstation**, see below |
-| Phase 1 on the real library | **capped run done 2026-08-30: 23,287 files, all resolved.** Full probe sweep still to run |
+| Phase 1 on the real library | **DONE 2026-08-30.** 23,287 files, 23,078 probed, 9 unprobeable, all resolved |
+| Duplicates | **238 group(s), 684 files, 166 GB reclaimable.** 150 need a human decision |
+| Plan | **RUN 2026-08-30.** 4,814 jobs queued, 5,411 GB, 2,844 encode-hours |
+| Next action | **`app work --limit 1`** -- print the command for one job, then execute one |
 | Media library | **untouched.** Nothing has been encoded, moved or deleted |
 
 ---
@@ -383,16 +386,55 @@ Note the redirect goes to the home directory, not `/volume1/scratch`: with
 `sudo` scoped to the docker binary only (see NAS access below), the shell
 opening the redirect is the login user, who cannot write there.
 
-### 6. Plan, then one real encode
+### 6. Plan -- DONE. One real encode -- NEXT
 
-```sh
-cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app plan
+**`app plan` ran 2026-08-30.** The queue, by action:
+
+| action | files | GB saved | encode-hours | GB/hour |
+|---|---|---|---|---|
+| encode | 4,594 | 4,944.8 | 2,831.5 | **1.7** |
+| remux | 216 | 461.4 | **11.1** | **41.6** |
+| downscale | 4 | 4.4 | 1.5 | 2.9 |
+| **total** | **4,814** | **5,410.6** | **2,844.1** | |
+
+**356 nights at 8h to finish everything** -- effectively a year. That is the
+number that should shape strategy from here.
+
+**But 461 GB is available in 11 hours.** The 216 remuxes are files already in
+HEVC where re-encoding would make them bigger; the win is dropping surplus
+audio tracks. 24x the GB/hour of encoding, and the queue is already ranked by
+GB/hour, so `app work` reaches them first without being told. Every one of the
+top 20 jobs is a remux, mostly multi-audio Ghibli rips shedding 7-12 tracks.
+Against 3.9 TB free, two nights of remuxing is real headroom before a single
+frame is re-encoded.
+
+Why 17,682 files were not queued:
+
+```
+12238  below the minimum source size (700MB)
+ 2225  protected (HDR/DV/10-bit)
+  887  no ladder rung for that resolution
+  857  saving below the floor
+  644  already at a low bitrate
+  626  waiting on a duplicate decision
+  205  already an efficient codec
 ```
 
-Films will be skipped with "no calibrated setting for movie at 1080p". That is
-correct and deliberate -- see the open question about movie sources below.
+The 626 unlock by working through the 150 duplicate groups that need a human.
+The 12,238 are a policy choice (`min_source_bytes`), revisitable later.
 
-Then work up to a real encode in three steps, checking each:
+**`app plan` reports GiB but labels it GB.** It printed 5,039 where the raw
+bytes are 5,410.6 GB -- exactly a factor of 1.0737. Do not mix the two when
+quoting figures. Same for its "1.8 GB per hour".
+
+**`keepers_file /config/keepers.txt is configured but does not exist`** warns
+on every run. Harmless -- keepers fall back to hardware -- but create an empty
+file or blank the setting to quieten it.
+
+Films are skipped with "no calibrated setting for movie at 1080p". Correct and
+deliberate; they still get audio-only remuxes where those pay.
+
+Now work up to a real encode in three steps, checking each:
 
 ```sh
 cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work --limit 1
@@ -493,9 +535,26 @@ someone_is_watching() -> (False, 'Tautulli reports nobody watching')
 
 `result: success` is the proof; `stream_count: 0` on its own is not.
 
-**Phase 1 ran on the real library for the first time**, capped at 200 probes.
-23,287 files, all of them resolved, no duplicate groups. See step 5 for the
-numbers and what they settle.
+**Phase 1 ran on the real library for the first time**, then in full. 23,287
+files, 23,078 probed in 47 minutes, all resolved. See step 5.
+
+**A correction worth keeping:** the capped run reported *0 duplicate groups*,
+and that was an artifact of the 200-probe cap, not a property of the library --
+duplicate detection needs probe data. The full sweep found **238 groups over
+684 files, 166 GB reclaimable, 150 needing a human**. Never read a duplicates
+figure from a capped scan.
+
+**9 files cannot be probed at all**, and they are genuinely broken rather than
+a scanner bug: truncated MP4s (`moov atom not found`) and MKVs whose EBML
+header starts with a zero byte. Plex cannot play them either. They are
+correctly excluded -- unprobeable means unplannable. **One small defect this
+exposed:** the scanner stores `ffprobe failed (1) for <path>:` and **discards
+ffprobe's stderr**, so the reason has to be re-derived by hand. Capturing
+stderr into `probe_error` is a few lines and has not been done.
+
+**`app plan` ran**, and its numbers are in step 6. The short version: a year of
+encoding to reclaim 5.4 TB, with 461 GB of it sitting in 11 hours of remuxes
+that the queue already ranks first.
 
 **The assistant was given SSH plus passwordless docker on the NAS**, which is
 how the second half of the day got done. See "Driving the NAS from the
