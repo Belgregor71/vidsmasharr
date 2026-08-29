@@ -42,6 +42,11 @@ sonarr:
   api_key: ""
   path_map:
     "/data/media": "/media"
+  # Seconds. The guard and Phase 1 both ask for the whole library in one call.
+  # Measured on the DS1019+ 2026-08-30: Sonarr's /series took 46s, Radarr's
+  # /movie 27s. Raise it further rather than lowering it -- a slow *arr is not
+  # a down *arr, and a timeout here looks like an outage.
+  timeout: 180.0
   # After we replace a file, ask Sonarr to re-read it so its own renaming turns
   # [x264] into [HEVC] and the guard's custom format can match it. Nothing on
   # disk changes; the renaming itself is a separate, manual `app arr-rename`.
@@ -53,6 +58,7 @@ radarr:
   api_key: ""
   path_map:
     "/data/media": "/media"
+  timeout: 180.0
   notify_on_replace: false
 
 # The *arr guard: stops Sonarr and Radarr replacing the HEVC files we make with

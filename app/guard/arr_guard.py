@@ -231,7 +231,8 @@ def client_for(service: str, config) -> ArrWriter | None:
     if not settings or not settings.enabled or not settings.url or not settings.api_key:
         return None
     return GUARDS[service](
-        settings.url, settings.api_key, path_map=settings.path_map
+        settings.url, settings.api_key,
+        timeout=settings.timeout, path_map=settings.path_map,
     )
 
 

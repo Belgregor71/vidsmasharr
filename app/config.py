@@ -35,6 +35,13 @@ class ArrConfig(BaseModel):
     url: str = ""
     api_key: str = ""
     path_map: dict[str, str] = Field(default_factory=dict)
+    # Seconds. Both the guard and Phase 1 identity ask for the WHOLE library in
+    # one call -- Sonarr's /series and Radarr's /movie, which embeds every
+    # movie's file record. Measured on the DS1019+ 2026-08-30: 46s for 2.6MB of
+    # series, 27s for 11.6MB of movies. The old 30s default failed the first
+    # outright and the second about half the time, and an *arr that is merely
+    # slow is not an *arr that is down, so the generous value is the right one.
+    timeout: float = 180.0
     # After we replace a file, ask this *arr to re-read it. Nothing on disk
     # changes -- it only updates the *arr's own idea of what the file is, which
     # is what lets the guard's custom format match it and what makes a later

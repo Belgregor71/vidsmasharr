@@ -494,3 +494,31 @@ class TestWriter:
         client = client_for(fake)
         with pytest.raises(ArrUnavailable):
             client.put("nosuchthing", {})
+
+    def test_the_configured_timeout_reaches_the_client(self, config):
+        """Measured on the DS1019+ 2026-08-30: Sonarr's /series takes 46s and
+        Radarr's /movie 27s, both whole-library calls. The old hardcoded 30s
+        default failed the first outright and the second intermittently, and
+        the failure reads as an outage rather than as slowness."""
+        config.sonarr.timeout = 240.0
+        assert arr_guard.client_for("sonarr", config).timeout == 240.0
+
+    def test_identity_gets_the_timeout_too(self, config, monkeypatch):
+        """Phase 1 builds its own clients, so wiring the guard alone would
+        leave `app phase1` on the default against the same slow calls."""
+        import app.identity.arr as arr_module
+
+        seen = {}
+
+        class Recorder(arr_module.SonarrClient):
+            def __init__(self, *args, **kwargs):
+                seen.update(kwargs)
+                super().__init__(*args, **kwargs)
+
+            def matches(self, *args, **kwargs):
+                return []
+
+        monkeypatch.setattr(arr_module, "SonarrClient", Recorder)
+        config.sonarr.timeout = 240.0
+        arr_module.load_sonarr(config.sonarr)
+        assert seen["timeout"] == 240.0

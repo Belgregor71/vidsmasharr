@@ -155,12 +155,18 @@ class SonarrClient(ArrClient):
 def load_radarr(config) -> dict[str, ArrMatch]:
     if not config.enabled or not config.url or not config.api_key:
         return {}
-    client = RadarrClient(config.url, config.api_key, path_map=config.path_map)
+    client = RadarrClient(
+        config.url, config.api_key,
+        timeout=config.timeout, path_map=config.path_map,
+    )
     return {m.path: m for m in client.matches()}
 
 
 def load_sonarr(config) -> dict[str, ArrMatch]:
     if not config.enabled or not config.url or not config.api_key:
         return {}
-    client = SonarrClient(config.url, config.api_key, path_map=config.path_map)
+    client = SonarrClient(
+        config.url, config.api_key,
+        timeout=config.timeout, path_map=config.path_map,
+    )
     return {m.path: m for m in client.matches()}
