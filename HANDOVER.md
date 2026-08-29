@@ -18,7 +18,7 @@ that could invalidate everything come before the expensive work.
 |---|---|
 | Code | Phases 0-4 built, 336 tests, `main` at `e842d30`, `ladder-robust` at `78541b6` |
 | NAS repo | **NOT a git checkout in any usable sense -- `git` is not on PATH.** See below |
-| TV ladder | rebuilt on 16 clips; **hevc_vaapi qp 22 -> 39% of source at 1080p** |
+| TV ladder | **written to `profiles.yaml` 2026-08-29** -- hevc_vaapi qp 22 -> 39% at 1080p |
 | Movie ladder | **absent, deliberately** -- no valid movie calibration exists yet |
 | Wider TV benchmark | **finished 2026-08-29**, folded in, 160 measurements total |
 | Direct play | **STILL UNVERIFIED -- this is the blocker** |
@@ -110,15 +110,19 @@ reclaimed after an assumed ~10% verification-reject tail, against ~3.6 TB for
 strict min. Speed cost: 33.0 fps against 37.5, so a 45-minute episode goes from
 ~29 to ~33 minutes.
 
-**`profiles.yaml` has NOT been written yet** -- every run so far was
-`--dry-run`. To write it (deploy first, per the git section above):
+**Written 2026-08-29** with the command below. `hw_decode` was carried forward
+from the previous `profiles.yaml` (`hevc_vaapi`, `hevc_qsv`, `h264_vaapi` all
+true) rather than lost, which is what you want -- production must decode the
+same way the benchmark measured or the fps figures are a fiction.
 
 ```sh
 cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.ladder --all-runs --run-class 9ece8030435f=tv --robust
 ```
 
-`--run-class` now writes the label into the measurements, so this is the last
-time it is needed. Rows that already record a class are never touched.
+The run reported `labelled 60 row(s) as tv -- stored`, so **`--run-class` is no
+longer needed**: rebuild with `--all-runs --robust` alone. Note that `--robust`
+*is* still needed every time -- it is a flag, not a stored property of the
+measurements, and rebuilding without it silently returns the qp 20 / 56% rung.
 
 **hevc_vaapi wins by more than the sizes suggest.** At 1080p hevc_qsv could not
 reach VMAF 92 on **3 of 10 clips**; vaapi failed on 1. qsv's rung prints a
@@ -150,10 +154,15 @@ and burned-in subtitles force one on their own. This is the most common way the
 test lies to you.
 
 Make a test file at the real ladder settings -- the iGPU must be free, so not
-while a benchmark is running:
+while a benchmark is running. **The `-qp 22` below is the current 1080p rung**
+(it was 26 before the 2026-08-29 rebuild; if you rebuild the ladder again,
+re-read the rung before making this file). QP does not change whether a client
+direct-plays -- codec, profile, level, bit depth and resolution decide that --
+but the higher-bitrate file is the more conservative test, so test at the
+setting you will actually ship:
 
 ```sh
-sudo mkdir -p /volume1/data/media/hevc-test && cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm --entrypoint ffmpeg vidsmasharr -hide_banner -nostdin -y -init_hw_device vaapi=va:/dev/dri/renderD128 -filter_hw_device va -hwaccel vaapi -hwaccel_output_format vaapi -i "/media/tv/SHOW/Season 1/EPISODE.mkv" -map 0:v:0 -c:v hevc_vaapi -rc_mode CQP -qp 26 -map 0:a:0 -c:a eac3 -b:a 640k -ac 6 -map_metadata 0 -map_chapters 0 "/media/hevc-test/directplay-test.mkv"
+sudo mkdir -p /volume1/data/media/hevc-test && cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm --entrypoint ffmpeg vidsmasharr -hide_banner -nostdin -y -init_hw_device vaapi=va:/dev/dri/renderD128 -filter_hw_device va -hwaccel vaapi -hwaccel_output_format vaapi -i "/media/tv/SHOW/Season 1/EPISODE.mkv" -map 0:v:0 -c:v hevc_vaapi -rc_mode CQP -qp 22 -map 0:a:0 -c:a eac3 -b:a 640k -ac 6 -map_metadata 0 -map_chapters 0 "/media/hevc-test/directplay-test.mkv"
 ```
 
 In Plex add a library of type **Other Videos** pointing at
