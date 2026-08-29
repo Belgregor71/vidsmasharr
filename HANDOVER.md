@@ -12,7 +12,7 @@ unverified ones.
 is running it against the real box, and the order matters: the cheap checks
 that could invalidate everything come before the expensive work.
 
-### State at a glance (2026-08-29)
+### State at a glance (2026-08-30)
 
 | | where it stands |
 |---|---|
@@ -21,7 +21,7 @@ that could invalidate everything come before the expensive work.
 | TV ladder | **written to `profiles.yaml` 2026-08-29** -- hevc_vaapi qp 22 -> 39% at 1080p |
 | Movie ladder | **absent, deliberately** -- no valid movie calibration exists yet |
 | Wider TV benchmark | **finished 2026-08-29**, folded in, 160 measurements total |
-| Direct play | **STILL UNVERIFIED -- this is the blocker** |
+| Direct play | **VERIFIED 2026-08-30 -- Direct Play on both TVs.** No longer a blocker |
 | *arr guard | dry run done against the live instances; **not applied** |
 | Phase 1 on the real library | **never run** |
 | Media library | **untouched.** Nothing has been encoded, moved or deleted |
@@ -137,12 +137,23 @@ guess: run the first real batch at the current setting, then `app calibrate`
 measures the actual reject rate and the evidence decides. If nothing fails
 verification, this was too cautious.
 
-### 2. Verify direct play on both TVs -- THE BLOCKER
+### 2. Verify direct play on both TVs -- DONE, and it passed
 
-Nothing downstream is worth doing until this is answered. If either TV
-transcodes HEVC, the CPU cost moves from one-time encoding to every playback on
-a Celeron that cannot manage it, and the codec choice, the ladder and the whole
-*arr guard need revisiting.
+**2026-08-30: both TVs report Direct Play.** A file encoded at the shipping
+1080p rung (`hevc_vaapi`, `qp 22`, `eac3` 640k 5.1) plays untranscoded on both
+sets, including the 1080p file on the 4K one. The last big assumption behind
+the whole plan is confirmed: HEVC costs CPU once at encode time, not on every
+playback.
+
+That was the blocker -- if either TV had transcoded, the codec choice, the
+ladder and the *arr guard would all have needed revisiting. Nothing downstream
+is gated on it any more. Proceed to step 3.
+
+If the `hevc-test` folder or its Plex library are still around, delete both:
+they serve no further purpose and `/volume1/data/media/hevc-test` sits inside
+the media share.
+
+<details><summary>how it was tested, if it ever needs redoing</summary>
 
 **Read the verdict in Tautulli** (already running on :8181) -> Activity. It
 shows `Direct Play` / `Direct Stream` / `Transcode` *and the reason*, which is
@@ -176,6 +187,8 @@ either can fail). Delete the library and folder afterwards.
   but read the reason: it usually points at the audio choice.
 - **Transcode (video)** -> stop, and reopen the codec decision.
 - **Transcode (audio) only** -> the video plan survives; revisit `audio.target_codec`.
+
+</details>
 
 ### 3. Fix `path_map` in the NAS `config.yaml` by hand
 
@@ -634,8 +647,8 @@ never against NAS hardware, so its factors mean nothing for the DS1019+ yet.
 ## Where we are
 
 **Phase 0 is complete: the calibration ran on 2026-08-28 and hevc_vaapi won
-outright. Direct play on the TVs is now the only unverified assumption left
-before bulk encoding.**
+outright, and direct play was confirmed on both TVs on 2026-08-30. No
+assumption about playback is left standing between here and bulk encoding.**
 
 The census settled the strategic question: **encoding is genuinely worth it
 here.** The library is 77% H.264 by file count and 91% by bytes, with roughly
@@ -812,7 +825,7 @@ single biggest open risk in the whole project.
 
 | Area | Decision |
 |---|---|
-| TVs | One 4K + one 1080p, both smart TVs 2018+, HEVC direct play assumed **but not yet verified** |
+| TVs | One 4K + one 1080p, both smart TVs 2018+, HEVC direct play **verified on both 2026-08-30** |
 | Player | Plex. One stored file must direct-play on both TVs; never per-TV copies |
 | Encoder | Hybrid: hardware HEVC default, software x265 only for a hand-picked keepers list |
 | 4K policy | Downscale **SDR** 4K → 1080p. **HDR/DV 4K is never touched** |
@@ -1131,11 +1144,8 @@ several runs, which is the point of storing every measurement.
 
 ### Still outstanding, and the run says so itself
 
-**Direct play has not been verified on either TV.** Encode 2-3 real files at
-the corrected ladder settings, put them in Plex, and confirm both TVs say
-*Direct Play* rather than *Transcode*. If either transcodes, the CPU cost moves
-to playback and the whole HEVC plan needs revisiting — stop there rather than
-encoding thousands of files.
+~~**Direct play has not been verified on either TV.**~~ **Verified 2026-08-30:
+both TVs report Direct Play.** See step 2 of the brief above.
 
 ---
 
@@ -1161,9 +1171,7 @@ encoding thousands of files.
    reduction assumption the whole 8-12 TB estimate rests on).
 
    </details>
-4. **Verify direct play** — encode 2-3 real files at the ladder settings, play
-   one on each TV, confirm Plex says "Direct Play" not "Transcode". Do not skip
-   this; if either TV transcodes the codec choice must change.
+4. ~~**Verify direct play.**~~ **Done 2026-08-30 -- Direct Play on both TVs.**
 5. **Run the plan for real**, once the calibration has written
    `config/profiles.yaml`:
    ```sh
