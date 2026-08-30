@@ -16,7 +16,7 @@ that could invalidate everything come before the expensive work.
 
 | | where it stands |
 |---|---|
-| Code | Phases 0-4 built, 340 tests, `main` at `e842d30`, `ladder-robust` at `50c244b` |
+| Code | Phases 0-4 built, 345 tests, `main` at `e842d30`, `ladder-robust` at `e373bb0` |
 | NAS repo | **NOT a git checkout in any usable sense -- `git` is not on PATH.** See below |
 | TV ladder | **written to `profiles.yaml` 2026-08-29** -- hevc_vaapi qp 22 -> 39% at 1080p |
 | Movie ladder | **absent, deliberately** -- no valid movie calibration exists yet |
@@ -27,11 +27,14 @@ that could invalidate everything come before the expensive work.
 | NAS access | **SSH + passwordless `docker` from the workstation**, see below |
 | Phase 1 on the real library | **DONE 2026-08-30.** 23,287 files, 23,078 probed, 9 unprobeable, all resolved |
 | Duplicates | **238 group(s), 684 files, 166 GB reclaimable.** 150 need a human decision |
-| Plan | **RUN 2026-08-30.** 4,814 jobs queued, 5,411 GB, 2,844 encode-hours |
-| First real job | **DONE 2026-08-30.** One remux, verified, 1.13 GB saved, `held` in `/scratch/encoding` |
-| Phase 3 deadlock | **FOUND AND FIXED 2026-08-30**, on that first job. See below before running anything |
-| Estimator | **Over-promised 2x on that remux** -- 2.21 GB predicted, 1.13 GB actual. Unexplained |
-| Next action | **Watch the remux output on both TVs.** Then deletion on, `app work --install-held` |
+| Plan | **RE-RUN 2026-08-30** after the estimator fix. 4,850 jobs, 5,437 GB, 2,868 encode-hours |
+| First real jobs | **DONE 2026-08-30.** Two remuxes, verified, 3.76 GiB, `held` in scratch |
+| Phase 3 deadlock | **FIXED `50c244b`.** Nothing ran before it; do not run an older build |
+| Dropped fonts | **FIXED `2561f41`.** The first output lost 15 font attachments. See below |
+| Estimator | **FIXED `e373bb0`** (AAC by channel). Look Back landed exact; Kiki still 30% over |
+| Outcomes recorded | **2.** `app calibrate` needs 8 before it will produce a factor |
+| Test copies | `/volume1/data/media/vidsmasharr-test/` -- readable by Plex, delete when done |
+| Next action | **Watch both test files on both TVs.** Then deletion on, `app work --install-held` |
 | Media library | **untouched.** Nothing has been encoded, moved or deleted |
 
 ---
@@ -91,11 +94,20 @@ sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.ladd
 ```
 
 **The NAS tree is therefore hand-patched and no longer matches any branch.**
-`bench/ladder.py` came from `ladder-robust`; `app/work/worker.py` was
-overwritten on 2026-08-30 with the deadlock fix (`50c244b`, on
-`ladder-robust`, not on `main`); everything else is `main` at `e842d30`. The
-pre-patch files are `/volume1/scratch/ladder.py.main.bak` and
-`/volume1/scratch/worker.py.main.bak`.
+`bench/ladder.py` came from `ladder-robust`; **three more files were
+overwritten on 2026-08-30** with fixes that live on `ladder-robust` and not
+on `main`; everything else is `main` at `e842d30`.
+
+| file | commit | pre-patch backup in `/volume1/scratch/` |
+|---|---|---|
+| `bench/ladder.py` | (session 4) | `ladder.py.main.bak` |
+| `app/work/worker.py` | `50c244b` | `worker.py.main.bak` |
+| `app/work/streams.py` | `2561f41` | `streams.py.main.bak` |
+| `app/plan/estimate.py` | `e373bb0` | `estimate.py.main.bak` |
+
+Four hand-patched files is past the point where this should be a checkout.
+Getting git onto the box, or re-deploying every file from one branch, is the
+cheapest thing left that stops this getting worse.
 
 **How to write to that tree at all**, since it is root-owned and the sudo
 grant covers only the docker binary -- `sudo cp` and `sudo curl` both fail
@@ -408,46 +420,61 @@ Note the redirect goes to the home directory, not `/volume1/scratch`: with
 `sudo` scoped to the docker binary only (see NAS access below), the shell
 opening the redirect is the login user, who cannot write there.
 
-### 6. Plan -- DONE. First real job -- DONE, a deadlock fixed on the way
+### 6. Plan -- RE-RUN. First real jobs -- DONE, three bugs fixed on the way
 
-**`app plan` ran 2026-08-30.** The queue, by action:
+**`app plan` ran twice on 2026-08-30**, the second time after the estimator
+fix below changed every audio-derived number in it. These are the figures
+that stand; anything quoting 4,814 jobs or 5,411 GB predates the fix.
 
 | action | files | GB saved | encode-hours | GB/hour |
 |---|---|---|---|---|
-| encode | 4,594 | 4,944.8 | 2,831.5 | **1.7** |
-| remux | 216 | 461.4 | **11.1** | **41.6** |
-| downscale | 4 | 4.4 | 1.5 | 2.9 |
-| **total** | **4,814** | **5,410.6** | **2,844.1** | |
+| encode | 4,629 | 4,977.1 | 2,855.3 | **1.7** |
+| remux | 217 | 455.8 | **11.1** | **41.1** |
+| downscale | 4 | 4.5 | 1.5 | 3.0 |
+| **total** | **4,850** | **5,437.4** | **2,867.9** | |
 
-**356 nights at 8h to finish everything** -- effectively a year. That is the
+**358 nights at 8h to finish everything** -- effectively a year. That is the
 number that should shape strategy from here.
 
-**But 461 GB is available in 11 hours.** The 216 remuxes are files already in
+**But 456 GB is available in 11 hours.** The 217 remuxes are files already in
 HEVC where re-encoding would make them bigger; the win is dropping surplus
 audio tracks. 24x the GB/hour of encoding, and the queue is already ranked by
 GB/hour, so `app work` reaches them first without being told. Every one of the
 top 20 jobs is a remux, mostly multi-audio Ghibli rips shedding 7-12 tracks.
-Against 3.9 TB free, two nights of remuxing is real headroom before a single
+Against 3.8 TB free, two nights of remuxing is real headroom before a single
 frame is re-encoded.
 
-Why 17,682 files were not queued:
+**The estimator fix barely touched this tier, and an earlier draft of this
+file was wrong to warn that it would.** It guessed the remux headline might
+fall from 461 GB to about 230. Measured: 455.8 GB. Almost all of the remux
+saving is EAC3, AC3 and DTS tracks, whose guesses did not change; only AAC
+did. What the fix really moved was *which* job is on top and what each one
+individually promises -- not the aggregate.
+
+The encode tier grew slightly, which is the same fix seen from the other
+side: audio is subtracted from file size to get the video share, so a
+smaller audio estimate means a larger video one, and 42 files that were
+under the saving floor now clear it.
+
+Why 17,639 files were not queued:
 
 ```
 12238  below the minimum source size (700MB)
  2225  protected (HDR/DV/10-bit)
-  887  no ladder rung for that resolution
-  857  saving below the floor
+  888  no ladder rung for that resolution
+  815  saving below the floor
   644  already at a low bitrate
   626  waiting on a duplicate decision
-  205  already an efficient codec
+  203  already an efficient codec
 ```
 
 The 626 unlock by working through the 150 duplicate groups that need a human.
 The 12,238 are a policy choice (`min_source_bytes`), revisitable later.
 
-**`app plan` reports GiB but labels it GB.** It printed 5,039 where the raw
-bytes are 5,410.6 GB -- exactly a factor of 1.0737. Do not mix the two when
-quoting figures. Same for its "1.8 GB per hour".
+**`app plan` reports GiB but labels it GB.** It printed 5,064 where the raw
+bytes are 5,437.4 GB -- exactly a factor of 1.0737. Do not mix the two when
+quoting figures. Same for its "1.8 GB per hour", and for the per-job GB in
+`app work` output.
 
 **`keepers_file /config/keepers.txt is configured but does not exist`** warns
 on every run. Harmless -- keepers fall back to hardware -- but create an empty
@@ -500,18 +527,124 @@ it reported `recovered 1 decision(s) left mid-flight by an interrupted run`
 and picked the killed row back up by itself. 3,028,272,347 bytes in,
 1,810,016,666 out.
 
-**But the saving was 1.13 GB against an estimated 2.21 GB -- 51%.** The
-estimator is built to under-promise (see the header of `app/plan/estimate.py`)
-and it over-promised by a factor of two on the very first job. This is not yet
-explained. It matters well beyond one file: **if that ratio holds across the
-remux tier, the "461 GB in 11 hours" headline is really about 230 GB.** First
-suspect is `audio_bytes_after` in `app/plan/estimate.py`, which values a
-dropped track at its declared bitrate times duration -- fine for CBR, wrong
-for anything whose container bitrate is a guess. Check this against a handful
-of finished remuxes before planning nights around the remux tier.
+#### Then the output turned out to be wrong, and the estimate with it
 
-Watch that file on both TVs before going further, then turn deletion on and
-use `app work --install-held` so the encode is not repeated.
+That first output was inspected before anyone watched it, which is the only
+reason either of the next two bugs was found. **Look at what comes out, not
+just at whether the run said "succeeded".**
+
+**It had lost every font.** The source carries 15 TTF attachments; the output
+had none. Both subtitle tracks kept are ASS, which is the format that styles
+signs and songs *by reference* to those attachments -- so the typesetting
+would have fallen back to whatever the player had. Nothing in the code
+mentioned attachments at all, and nothing in the output mentioned them either,
+which is how it went unnoticed. Fixed in `2561f41`: `-map 0:t?` wherever a
+subtitle survives, and the dry-run summary now says "fonts kept". The `?`
+matters -- most files have no attachments and ffmpeg must not fail on them.
+Both cases were verified against real media on the NAS before the code was
+written.
+
+**And the 2x estimate gap was arithmetic, not mystery.** mkv stores no
+per-track bitrate, so `track_bitrate` fell back to a flat guess of 256k for
+every AAC track. Twelve dropped tracks times 256,000 times 6184.66 seconds is
+2.21 GiB -- the estimate, to the digit. The real tracks run near 128k.
+
+The same constant corrupted the other side too, and that is the part worth
+remembering: `source_video_bytes` is *file size minus audio*, so over-stating
+audio under-states video. It had concluded that 13 AAC tracks were 2.57 GB of
+a 3.03 GB file, leaving 455 MB of video for a 103-minute 1080p HEVC feature,
+and predicted a 660 MB output where 1.81 GB landed.
+
+Fixed in `e373bb0`: AAC is guessed at 64k per channel -- 128k stereo, 384k for
+5.1, which the same file's Italian and Spanish tracks genuinely are. Unknown
+channel count falls back to stereo rather than to something larger, keeping
+the error on the under-promising side the module is built to err on.
+
+#### What the two real jobs actually measured
+
+Both re-run after all three fixes, on 2026-08-30:
+
+| file | before | after | saved | estimated | |
+|---|---|---|---|---|---|
+| Look Back (2024) | 4,472,477,259 | 1,642,583,821 | 2.64 GiB | 2.64 GiB | exact |
+| Kiki's Delivery Service | 3,028,272,347 | 1,815,850,428 | 1.13 GiB | 1.46 GiB | 30% over |
+
+Look Back landing exactly is a fair test of the fix rather than a lucky one:
+its dropped tracks are EAC3, whose guess never changed, so it shows the AAC
+change did not disturb what already worked. Kiki's residual 30% is the part
+still unexplained -- subtitle and font bytes the model does not account for,
+plus tracks genuinely below 128k. Still over-promising, which is the wrong
+direction for this module. Worth another look once more outcomes exist.
+
+**CPU is under-estimated by roughly 1.7x on both** (49.6s against 28.4s,
+32.4s against 19.3s). Small in absolute terms for a remux, but it feeds the
+GB/hour ranking. That is what `app calibrate` is for, after a batch.
+
+Kiki also proved the font fix end to end: 15 attachments in the output, about
+5 MB. Look Back correctly has none -- its source has none, only 41 SubRip
+tracks, which need no fonts. That incidentally tested the `?` on a real file
+with no attachments.
+
+#### The database surgery that redoing them needed
+
+The first, fontless output had already been verified and recorded. Before
+re-running, on 2026-08-30 (DB backed up first to
+`/volume1/scratch/vidsmasharr.db.pre-replan.bak`, 45 MB):
+
+- the stale `outcome` row was deleted, so calibration never sees a run whose
+  command differs from what the code now produces
+- both `job` rows for the decision were set to `state='superseded'` rather
+  than deleted. This keeps the deadlock on the record while keeping them out
+  of the `j.state = 'done'` join in `install_held` -- **leaving a second
+  `done` job row against one decision would have made `install_held` try to
+  install the same file twice.** Worth knowing before hand-editing this table
+  again; `job.state` has no CHECK constraint, so a new value is safe.
+- the decision went back to `state='pending'`, and the fontless file was
+  deleted from scratch
+
+Then `app plan` was re-run, *after* the reset so the redone job got a fresh
+estimate too. Order matters: a decision still in `held` is not re-planned.
+
+#### Where the outputs are, and why you cannot see them
+
+Both live in scratch, which is where `held` outputs wait:
+
+```
+/volume1/scratch/vidsmasharr/encoding/
+```
+
+**That path is unreachable by anyone but root.** `/volume1/scratch` is
+`drwx------ root:root` -- created by Docker, not through DSM's share manager,
+so unlike every other top-level folder on `/volume1` it has no DSM ACL, is not
+an SMB share, and Plex cannot read it either. The files inside are `644`; it
+is the directory above them that blocks everything.
+
+So copies were placed where Plex can reach them, `docker:users` `644` to match
+the rest of the library:
+
+```
+/volume1/data/media/vidsmasharr-test/
+```
+
+It is a sibling of `Anime/`, `movies/` and `tv/`, deliberately **not** inside
+any *arr root folder, so nothing will try to import or rename them. Add it to
+Plex as an **Other Videos** library -- that skips metadata matching, which a
+Movies library would attempt and probably fail on the AnimeRG filename.
+
+**Delete that folder when the testing is done.** It is 3.4 GB of duplicate,
+and the scratch copies are the ones `app work --install-held` needs -- do not
+delete those instead.
+
+#### What to check on the TVs, and what happens after
+
+- **Direct Play, not transcode**, on both. That is the assumption the whole
+  ladder rests on.
+- **Kiki:** signs and songs should be *styled*, not plain -- that is the font
+  fix. English audio only, two English subtitle tracks.
+- **Look Back:** EAC3 5.1 English, 12 English subtitle tracks, no fonts.
+
+Then turn `delete_original_on_success` on and use `app work --install-held`,
+which installs what is already in scratch rather than spending the work again.
 
 ### 7. Only after a real batch: calibrate
 
@@ -533,6 +666,10 @@ never before. Re-run `app plan` afterwards -- the queue order is the point.
   H.264 release an upgrade over a night of work. There is a test named for it.
 - A dry-run diff before writing to Sonarr/Radarr is locked; there is no flag to
   skip it.
+- **Kept subtitles keep their fonts.** `-map 0:t?` is not decoration: an ASS
+  track styles signs and songs by reference to the container's attachments, so
+  a remux that drops them silently degrades the track it just chose to keep.
+  Found the hard way 2026-08-30; see section 6.
 - `app/identity/arr.py` stays read-only. Write verbs live in `app/guard/`.
 - The ladder groups by content class. Do not "simplify" that back to
   (encoder, resolution) -- see the session 4 notes for what it cost.
@@ -616,7 +753,7 @@ ffprobe's stderr**, so the reason has to be re-derived by hand. Capturing
 stderr into `probe_error` is a few lines and has not been done.
 
 **`app plan` ran**, and its numbers are in step 6. The short version: a year of
-encoding to reclaim 5.4 TB, with 461 GB of it sitting in 11 hours of remuxes
+encoding to reclaim 5.4 TB, with 456 GB of it sitting in 11 hours of remuxes
 that the queue already ranks first.
 
 **The assistant was given SSH plus passwordless docker on the NAS**, which is
@@ -1369,12 +1506,16 @@ app/web/               + the /activity page
 
 ### Still not verified on real hardware
 
-Everything above passes on synthetic data with ffmpeg mocked out. **One real
-remux has now been through the pipeline** (2026-08-30, see "The first real
-job" near the top) -- it found a deadlock that every mocked test had missed,
-because mocking `_run_with_progress` is precisely mocking out the bug. Still
-unproven on real media: **any re-encode at all**, VMAF verification against a
-real source, the atomic swap, and deletion.
+Everything above passes on synthetic data with ffmpeg mocked out. **Two real
+remuxes have now been through the pipeline** (2026-08-30, see "The first real
+job" near the top). Between them they found three bugs that the whole mocked
+suite had missed, and the reason is worth keeping in mind when adding tests
+here: mocking `_run_with_progress` mocks out the deadlock, and no test looked
+at the streams in a produced file, so no test could see the fonts go missing.
+
+Still unproven on real media: **any re-encode at all**, VMAF verification
+against a real source, the atomic swap, and deletion. Everything measured so
+far is stream-copy work.
 
 ---
 
@@ -1500,9 +1641,10 @@ both TVs report Direct Play.** See step 2 of the brief above.
    shape of the plan anyway, in a state Phase 3 cannot execute. Run
    `app duplicates` first -- files in an unresolved duplicate group are
    deliberately held out of the queue.
-6. ~~**Run one real job.**~~ **Done 2026-08-30 -- one remux, 1.13 GB, held in
-   scratch.** It took a deadlock fix (`50c244b`) to get there. A real
-   *re-encode* still has not run. The commands:
+6. ~~**Run one real job.**~~ **Done 2026-08-30 -- two remuxes, 3.76 GiB, held
+   in scratch.** It took three fixes to get there (`50c244b` deadlock,
+   `2561f41` fonts, `e373bb0` estimator) -- read section 6 before running
+   anything. A real *re-encode* still has not run. The commands:
    ```sh
    sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work --limit 1
    sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work --limit 1 --execute
