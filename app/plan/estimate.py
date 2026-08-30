@@ -23,8 +23,13 @@ from typing import Any
 from app.plan.profiles import ASSUMED_FPS, Rung
 from app.plan.rules import FileFacts
 
-# Bitrate to assume for an audio track ffprobe reported no bitrate for. Rough,
-# but audio is a small share of a video file and the errors do not compound.
+# Bitrate to assume for an audio track ffprobe reported no bitrate for -- which
+# in mkv is nearly all of them, the container rarely stores it.
+#
+# These are not harmless. On a *remux* the dropped audio is the entire saving,
+# so this table alone decides both the promised GB and where the job lands in a
+# queue ranked by GB per CPU-hour. The first real remux came in at 51% of its
+# estimate for exactly this reason; see AAC_BITRATE_PER_CHANNEL.
 AUDIO_BITRATE_GUESS = {
     "truehd": 4_500_000,
     "mlp": 4_500_000,
@@ -34,13 +39,19 @@ AUDIO_BITRATE_GUESS = {
     "dts": 1_500_000,
     "eac3": 640_000,
     "ac3": 448_000,
-    "aac": 256_000,
     "opus": 192_000,
     "mp3": 192_000,
     "vorbis": 192_000,
 }
 DTS_HD_BITRATE = 3_500_000
 DEFAULT_AUDIO_BITRATE = 384_000
+
+# AAC is the one codec common enough, and variable enough, to be worth scaling
+# by channel count rather than guessing flat. A flat 256_000 over-promised by
+# exactly 2x on the first real remux -- twelve stereo tracks that actually ran
+# near 128k -- while the same file's 5.1 tracks are genuinely fatter than any
+# single number the table could hold.
+AAC_BITRATE_PER_CHANNEL = 64_000
 
 # Frame rate to assume when ffprobe could not report one.
 DEFAULT_FPS = 24.0
@@ -93,6 +104,12 @@ def track_bitrate(track: dict) -> int:
     codec = (track.get("codec") or "").lower()
     if codec == "dts" and (track.get("profile") or "") not in ("", "DTS"):
         return DTS_HD_BITRATE
+    if codec == "aac":
+        # Unknown channel count falls back to stereo rather than to something
+        # larger: under-stating a dropped track under-promises the saving, and
+        # that is the direction this module is built to err in.
+        channels = int(track.get("channels") or 2)
+        return AAC_BITRATE_PER_CHANNEL * max(channels, 1)
     return AUDIO_BITRATE_GUESS.get(codec, DEFAULT_AUDIO_BITRATE)
 
 

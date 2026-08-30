@@ -288,6 +288,28 @@ class TestEstimates:
         b = estimate_mod.DEFAULT.encode(long, rung(), None, config)
         assert b.cpu_seconds == pytest.approx(2 * a.cpu_seconds, rel=0.01)
 
+    def test_the_aac_guess_scales_with_channels(self):
+        """The miss that made the first real remux promise twice what it paid.
+
+        mkv stores no per-track bitrate, so a dropped track is worth whatever
+        this guess says -- and on a remux that guess *is* the whole estimate.
+        A flat 256k read every stereo track as twice its size.
+        """
+        stereo = {"codec": "aac", "channels": 2, "bitrate": None}
+        surround = {"codec": "aac", "channels": 6, "bitrate": None}
+
+        assert estimate_mod.track_bitrate(stereo) == 128_000
+        assert estimate_mod.track_bitrate(surround) == 384_000
+
+    def test_a_declared_bitrate_always_beats_the_guess(self):
+        real = {"codec": "aac", "channels": 2, "bitrate": 96_000}
+        assert estimate_mod.track_bitrate(real) == 96_000
+
+    def test_an_aac_track_of_unknown_width_is_assumed_stereo(self):
+        """Under-stating a dropped track under-promises the saving, which is
+        the direction this module is built to err in."""
+        assert estimate_mod.track_bitrate({"codec": "aac"}) == 128_000
+
     def test_parse_bitrate_accepts_the_ffmpeg_spelling(self):
         assert estimate_mod.parse_bitrate("640k") == 640_000
         assert estimate_mod.parse_bitrate("1.5m") == 1_500_000
