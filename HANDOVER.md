@@ -16,7 +16,7 @@ that could invalidate everything come before the expensive work.
 
 | | where it stands |
 |---|---|
-| Code | Phases 0-4 built, 338 tests, `main` at `e842d30`, `ladder-robust` at `b4a4b4a` |
+| Code | Phases 0-4 built, 340 tests, `main` at `e842d30`, `ladder-robust` at `50c244b` |
 | NAS repo | **NOT a git checkout in any usable sense -- `git` is not on PATH.** See below |
 | TV ladder | **written to `profiles.yaml` 2026-08-29** -- hevc_vaapi qp 22 -> 39% at 1080p |
 | Movie ladder | **absent, deliberately** -- no valid movie calibration exists yet |
@@ -28,7 +28,10 @@ that could invalidate everything come before the expensive work.
 | Phase 1 on the real library | **DONE 2026-08-30.** 23,287 files, 23,078 probed, 9 unprobeable, all resolved |
 | Duplicates | **238 group(s), 684 files, 166 GB reclaimable.** 150 need a human decision |
 | Plan | **RUN 2026-08-30.** 4,814 jobs queued, 5,411 GB, 2,844 encode-hours |
-| Next action | **`app work --limit 1`** -- print the command for one job, then execute one |
+| First real job | **DONE 2026-08-30.** One remux, verified, 1.13 GB saved, `held` in `/scratch/encoding` |
+| Phase 3 deadlock | **FOUND AND FIXED 2026-08-30**, on that first job. See below before running anything |
+| Estimator | **Over-promised 2x on that remux** -- 2.21 GB predicted, 1.13 GB actual. Unexplained |
+| Next action | **Watch the remux output on both TVs.** Then deletion on, `app work --install-held` |
 | Media library | **untouched.** Nothing has been encoded, moved or deleted |
 
 ---
@@ -88,8 +91,27 @@ sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.ladd
 ```
 
 **The NAS tree is therefore hand-patched and no longer matches any branch.**
-`bench/ladder.py` came from `ladder-robust`; everything else is `main` at
-`e842d30`. The pre-patch file is at `/volume1/scratch/ladder.py.main.bak`.
+`bench/ladder.py` came from `ladder-robust`; `app/work/worker.py` was
+overwritten on 2026-08-30 with the deadlock fix (`50c244b`, on
+`ladder-robust`, not on `main`); everything else is `main` at `e842d30`. The
+pre-patch files are `/volume1/scratch/ladder.py.main.bak` and
+`/volume1/scratch/worker.py.main.bak`.
+
+**How to write to that tree at all**, since it is root-owned and the sudo
+grant covers only the docker binary -- `sudo cp` and `sudo curl` both fail
+here, whatever the older notes say. Pipe the file through a container that
+mounts the repo, which `cat >` truncates in place so ownership and mode
+survive:
+
+```sh
+tr -d '\r' < app/work/worker.py \
+  | ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179 \
+    'sudo /usr/local/bin/docker run --rm -i -v /volume1/docker/vidsmasharr:/repo \
+     alpine:latest sh -c "cat > /repo/app/work/worker.py"'
+```
+
+Then rebuild, and check the hash the image actually carries -- md5 both ends,
+because nothing warns you when the container is running last week's code.
 Getting git working, or re-deploying every file from one branch, is worth doing
 before the next code change.
 
@@ -386,7 +408,7 @@ Note the redirect goes to the home directory, not `/volume1/scratch`: with
 `sudo` scoped to the docker binary only (see NAS access below), the shell
 opening the redirect is the login user, who cannot write there.
 
-### 6. Plan -- DONE. One real encode -- NEXT
+### 6. Plan -- DONE. First real job -- DONE, a deadlock fixed on the way
 
 **`app plan` ran 2026-08-30.** The queue, by action:
 
@@ -434,7 +456,10 @@ file or blank the setting to quieten it.
 Films are skipped with "no calibrated setting for movie at 1080p". Correct and
 deliberate; they still get audio-only remuxes where those pay.
 
-Now work up to a real encode in three steps, checking each:
+#### The first real job -- run 2026-08-30, and what it cost to get there
+
+Both steps below have now been run. **Read the deadlock note before the
+commands**; the second step does not work on any build older than `50c244b`.
 
 ```sh
 cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work --limit 1
@@ -446,9 +471,47 @@ cd /volume1/docker/vidsmasharr && sudo docker compose -f docker/docker-compose.y
 
 The first prints the ffmpeg command. The second really encodes and verifies,
 leaving the output in `/scratch/encoding` because
-`delete_original_on_success` is off. Watch that file on both TVs before going
-further, then turn deletion on and use `app work --install-held` so the encode
-is not repeated.
+`delete_original_on_success` is off.
+
+**The dry run was correct first time.** Top of the queue was the remux the
+plan predicted: Kiki's Delivery Service, an AnimeRG rip shedding 12 audio
+tracks and 10 subtitle tracks, video copied bit for bit.
+
+**The execute run then hung for twelve minutes and had to be killed.** Not a
+slow encode -- a deadlock, and one that would have hit the *first* job of any
+future batch too:
+
+- `ffmpeg` asleep in `pipe_wait`, zero CPU time, the output file never even
+  opened. The parent `python3` asleep in `pipe_wait` as well.
+- Cause: `_run_with_progress` piped stderr but only read it after the stdout
+  loop reached EOF. ffmpeg dumps every stream to stderr before it opens the
+  output, and a 26-stream source overruns the 64K pipe buffer doing it. It
+  blocked writing the banner; we blocked waiting for progress that could no
+  longer come.
+- Worse, `timeout` was checked *inside* that blocking read, so the deadline
+  could only fire on a process that was still talking. The one case it existed
+  to catch was the one case it could not see. It would have hung all night.
+- Fixed in `50c244b`: stderr goes to a temporary file, and a watchdog timer
+  kills from outside the loop. Two regression tests; the deadlock one was
+  confirmed to hang on the old code before being confirmed to pass on the new.
+
+**The re-run succeeded in 72 seconds**, and the mid-flight recovery worked --
+it reported `recovered 1 decision(s) left mid-flight by an interrupted run`
+and picked the killed row back up by itself. 3,028,272,347 bytes in,
+1,810,016,666 out.
+
+**But the saving was 1.13 GB against an estimated 2.21 GB -- 51%.** The
+estimator is built to under-promise (see the header of `app/plan/estimate.py`)
+and it over-promised by a factor of two on the very first job. This is not yet
+explained. It matters well beyond one file: **if that ratio holds across the
+remux tier, the "461 GB in 11 hours" headline is really about 230 GB.** First
+suspect is `audio_bytes_after` in `app/plan/estimate.py`, which values a
+dropped track at its declared bitrate times duration -- fine for CBR, wrong
+for anything whose container bitrate is a guess. Check this against a handful
+of finished remuxes before planning nights around the remux tier.
+
+Watch that file on both TVs before going further, then turn deletion on and
+use `app work --install-held` so the encode is not repeated.
 
 ### 7. Only after a real batch: calibrate
 
@@ -1306,10 +1369,12 @@ app/web/               + the /activity page
 
 ### Still not verified on real hardware
 
-Everything above passes on synthetic data with ffmpeg mocked out. **No real
-encode has been run through this pipeline yet.** The first one should be a
-`--limit 1` dry run, then a `--limit 1 --execute` with deletion still off, and
-then a look at what lands in `/scratch/encoding`.
+Everything above passes on synthetic data with ffmpeg mocked out. **One real
+remux has now been through the pipeline** (2026-08-30, see "The first real
+job" near the top) -- it found a deadlock that every mocked test had missed,
+because mocking `_run_with_progress` is precisely mocking out the bug. Still
+unproven on real media: **any re-encode at all**, VMAF verification against a
+real source, the atomic swap, and deletion.
 
 ---
 
@@ -1435,8 +1500,9 @@ both TVs report Direct Play.** See step 2 of the brief above.
    shape of the plan anyway, in a state Phase 3 cannot execute. Run
    `app duplicates` first -- files in an unresolved duplicate group are
    deliberately held out of the queue.
-6. **Run one real encode.** Phase 3 is built but has never met real media.
-   Work up to it in three steps, checking the output at each:
+6. ~~**Run one real job.**~~ **Done 2026-08-30 -- one remux, 1.13 GB, held in
+   scratch.** It took a deadlock fix (`50c244b`) to get there. A real
+   *re-encode* still has not run. The commands:
    ```sh
    sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work --limit 1
    sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work --limit 1 --execute
