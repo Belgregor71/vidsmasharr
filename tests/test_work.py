@@ -437,6 +437,32 @@ class TestStreamPlan:
         assert sorted(plan.kept_subs) == [5, 6]
         assert plan.dropped_subs == [7]
 
+    def test_kept_subtitles_bring_their_fonts_with_them(self, config):
+        """An ASS track without its fonts is not the track we chose to keep.
+
+        Anime rips attach the typeface the signs and songs are styled in. The
+        first real remux dropped fifteen of them and nothing noticed, because
+        nothing was looking.
+        """
+        info = fake_info(subs=[
+            subtitle(index=14, language="eng"),
+            subtitle(index=16, language="nor"),
+        ])
+        plan = streams.build_stream_plan(info, config)
+
+        assert plan.kept_attachments
+        assert "0:t?" in plan.args
+        assert "fonts kept" in plan.summary
+
+    def test_no_subtitles_means_no_fonts_worth_carrying(self, config):
+        info = fake_info(subs=[subtitle(index=16, language="nor")])
+        plan = streams.build_stream_plan(info, config)
+
+        assert not plan.kept_subs
+        assert not plan.kept_attachments
+        assert "0:t?" not in plan.args
+        assert "-sn" in plan.args
+
     def test_the_kept_track_is_made_default(self, config):
         plan = streams.build_stream_plan(fake_info(), config)
         assert "-disposition:a:0" in plan.args

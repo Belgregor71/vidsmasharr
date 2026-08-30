@@ -29,6 +29,7 @@ class StreamPlan:
     kept_subs: list[int] = field(default_factory=list)
     dropped_subs: list[int] = field(default_factory=list)
     audio_transcoded: bool = False
+    kept_attachments: bool = False
     note: str = ""
 
     @property
@@ -37,6 +38,7 @@ class StreamPlan:
             f"audio: keep {len(self.kept_audio)}, drop {len(self.dropped_audio)}"
             f"{' (transcoded)' if self.audio_transcoded else ' (copied)'}; "
             f"subs: keep {len(self.kept_subs)}, drop {len(self.dropped_subs)}"
+            f"{'; fonts kept' if self.kept_attachments else ''}"
         )
 
 
@@ -82,6 +84,16 @@ def build_stream_plan(info: MediaInfo, config, *, copy_audio: bool = False) -> S
     for index in keep_subs:
         args += ["-map", f"0:{index}"]
 
+    # Fonts ride along with the subtitles that need them. An ASS track carries
+    # the typesetting for signs and songs by *reference* to fonts attached to
+    # the container, so dropping the attachments leaves the track rendering in
+    # whatever the player falls back to -- on an anime rip that styling is most
+    # of the reason the track was worth keeping. They cost a few MB against a
+    # feature film. `?` makes the map optional: most files carry no attachments
+    # and ffmpeg must not fail on them.
+    if keep_subs:
+        args += ["-map", "0:t?"]
+
     if not keep_indexes:
         # Should be unreachable -- select_audio keeps everything rather than
         # returning nothing -- but a file with genuinely no audio exists.
@@ -119,5 +131,6 @@ def build_stream_plan(info: MediaInfo, config, *, copy_audio: bool = False) -> S
         kept_subs=keep_subs,
         dropped_subs=drop_subs,
         audio_transcoded=transcode,
+        kept_attachments=bool(keep_subs),
         note=selection["note"],
     )
