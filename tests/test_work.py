@@ -1,3 +1,4 @@
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -629,6 +630,39 @@ class TestDryRun:
     def test_progress_reporting_is_asked_for_machine_readably(self):
         cmd = worker.with_progress(["ffmpeg", "-i", "a.mkv", "out.mkv"])
         assert cmd[:4] == ["ffmpeg", "-progress", "pipe:1", "-nostats"]
+
+    def test_a_loud_stderr_does_not_deadlock_the_progress_read(self, monkeypatch):
+        """The failure that stopped the first real remux dead.
+
+        ffmpeg dumps every stream to stderr before it opens the output, and a
+        many-track source overruns the 64K pipe buffer doing it. stderr must not
+        be a pipe we only drain after stdout closes, or ffmpeg blocks writing
+        the banner while we block waiting for progress, for as long as anyone
+        leaves it.
+        """
+        monkeypatch.setattr(worker, "with_progress", lambda cmd: cmd)
+        noisy = (
+            "import sys; "
+            "sys.stderr.write('x' * 300_000); "
+            "sys.stdout.write('out_time_ms=1000000' + chr(10))"
+        )
+        seen: list[float] = []
+        code, stderr, _ = worker._run_with_progress(
+            [sys.executable, "-c", noisy], timeout=60, on_progress=seen.append
+        )
+        assert code == 0
+        assert len(stderr) == 300_000
+        assert seen == [1.0]
+
+    def test_a_silent_process_is_killed_at_the_deadline(self, monkeypatch):
+        """The timeout has to hold even when no progress line ever arrives."""
+        monkeypatch.setattr(worker, "with_progress", lambda cmd: cmd)
+        code, stderr, elapsed = worker._run_with_progress(
+            [sys.executable, "-c", "import time; time.sleep(120)"], timeout=1
+        )
+        assert code == -1
+        assert "1s" in stderr
+        assert elapsed < 60
 
 
 class TestTheRecordItLeaves:

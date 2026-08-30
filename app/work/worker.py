@@ -29,6 +29,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -244,21 +246,44 @@ def with_progress(cmd: list[str]) -> list[str]:
 def _run_with_progress(
     cmd: list[str], *, timeout: int, nice: int = 0, on_progress=None
 ) -> tuple[int, str, float]:
-    """Run ffmpeg, reporting progress as it goes. Returns (rc, stderr, seconds)."""
+    """Run ffmpeg, reporting progress as it goes. Returns (rc, stderr, seconds).
+
+    stderr goes to a temporary file, never a pipe. We read stdout to the end
+    before we look at stderr, so a piped stderr deadlocks the pair the moment
+    ffmpeg writes more than the 64K pipe buffer: it blocks part-way through the
+    banner, we block waiting for progress that can no longer come. A source with
+    a few dozen streams dumps more than that before it even opens the output --
+    the first real remux hung there, with the output file never created.
+    """
     preexec = None
     if nice and hasattr(os, "nice"):
         def preexec() -> None:  # pragma: no cover - POSIX only
             os.nice(nice)
 
     started = time.monotonic()
+    errors = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
     process = subprocess.Popen(
         with_progress(cmd),
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=errors,
         text=True,
         preexec_fn=preexec,
     )
 
+    # The loop below only notices the deadline between progress lines, so an
+    # ffmpeg that goes quiet has to be killed from outside it. Without this the
+    # timeout is only enforced on a process that is still talking.
+    expired = threading.Event()
+
+    def _expire() -> None:  # pragma: no cover - timing dependent
+        expired.set()
+        process.kill()
+
+    watchdog = threading.Timer(timeout, _expire)
+    watchdog.daemon = True
+    watchdog.start()
+
+    killed = ""
     out_time_s = 0.0
     try:
         for line in process.stdout or []:
@@ -269,19 +294,28 @@ def _run_with_progress(
                     on_progress(out_time_s)
             if time.monotonic() - started > timeout:
                 process.kill()
-                return -1, f"killed after {timeout}s", time.monotonic() - started
+                killed = f"killed after {timeout}s"
+                break
         process.wait(timeout=60)
     except subprocess.TimeoutExpired:
         process.kill()
-        return -1, f"timed out after {timeout}s", time.monotonic() - started
+        killed = f"timed out after {timeout}s"
     finally:
+        watchdog.cancel()
         if process.stdout:
             process.stdout.close()
 
-    stderr = process.stderr.read() if process.stderr else ""
-    if process.stderr:
-        process.stderr.close()
-    return process.returncode, stderr, time.monotonic() - started
+    elapsed = time.monotonic() - started
+    if expired.is_set() and not killed:
+        killed = f"timed out after {timeout}s"
+    if killed:
+        errors.close()
+        return -1, killed, elapsed
+
+    errors.seek(0)
+    stderr = errors.read()
+    errors.close()
+    return process.returncode, stderr, elapsed
 
 
 def build_command(row, info: MediaInfo, config, *, dest: Path, threads: int):
