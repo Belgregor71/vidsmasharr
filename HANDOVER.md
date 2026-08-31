@@ -1,4 +1,4 @@
-# Handover — sessions 1–5 (2026-08-27 → 29)
+# Handover — sessions 1–7 (2026-08-27 → 31)
 
 Read this first. It records what is *verified* on the real hardware versus what
 is still assumed, so tomorrow doesn't re-litigate settled decisions or trust
@@ -12,12 +12,12 @@ unverified ones.
 is running it against the real box, and the order matters: the cheap checks
 that could invalidate everything come before the expensive work.
 
-### State at a glance (2026-08-30)
+### State at a glance (2026-08-31)
 
 | | where it stands |
 |---|---|
-| Code | Phases 0-4 built, 345 tests, `main` at `e842d30`, `ladder-robust` at `e373bb0` |
-| NAS repo | **NOT a git checkout in any usable sense -- `git` is not on PATH.** See below |
+| Code | Phases 0-4 built, 345 tests, **`main` at `485c74c`**. `ladder-robust` is merged and deleted -- everything it carried is on `main`, which is the only branch on the remote |
+| NAS repo | **NOT a git checkout -- `git` is not on PATH.** But md5-swept 2026-08-31: tree *and* image are `485c74c` throughout, bar 4 inert test files. See below |
 | TV ladder | **written to `profiles.yaml` 2026-08-29** -- hevc_vaapi qp 22 -> 39% at 1080p |
 | Movie ladder | **absent, deliberately** -- no valid movie calibration exists yet |
 | Wider TV benchmark | **finished 2026-08-29**, folded in, 160 measurements total |
@@ -33,8 +33,9 @@ that could invalidate everything come before the expensive work.
 | Dropped fonts | **FIXED `2561f41`.** The first output lost 15 font attachments. See below |
 | Estimator | **FIXED `e373bb0`** (AAC by channel). Look Back landed exact; Kiki still 30% over |
 | Outcomes recorded | **2.** `app calibrate` needs 8 before it will produce a factor |
-| Test copies | `/volume1/data/media/vidsmasharr-test/` -- readable by Plex, delete when done |
-| Next action | **Watch both test files on both TVs.** Then deletion on, `app work --install-held` |
+| Playback on TV | **PASSED 2026-08-31.** Both test files watched on both TVs, both good against the step 6 checks |
+| Test copies | `/volume1/data/media/vidsmasharr-test/` -- **testing is done; delete this folder.** Not the scratch copies |
+| Next action | **Turn on `delete_original_on_success`, then `app work --install-held`** -- installs the two outputs already in scratch rather than redoing the work |
 | Media library | **untouched.** Nothing has been encoded, moved or deleted |
 
 ---
@@ -81,7 +82,7 @@ repo is public, the image bakes the source in (`docker/Dockerfile` does
 before it runs -- editing on disk alone changes nothing:
 
 ```sh
-cd /volume1/docker/vidsmasharr && sudo cp bench/ladder.py /volume1/scratch/ladder.py.main.bak && sudo curl -fsSL -o bench/ladder.py https://raw.githubusercontent.com/Belgregor71/vidsmasharr/ladder-robust/bench/ladder.py && sudo docker compose -f docker/docker-compose.yml build
+cd /volume1/docker/vidsmasharr && sudo cp bench/ladder.py /volume1/scratch/ladder.py.main.bak && sudo curl -fsSL -o bench/ladder.py https://raw.githubusercontent.com/Belgregor71/vidsmasharr/main/bench/ladder.py && sudo docker compose -f docker/docker-compose.yml build
 ```
 
 The rebuild is quick: `pyproject.toml` is unchanged, so the apt, ffmpeg and pip
@@ -93,21 +94,52 @@ nothing warns you if it is not:
 sudo docker compose -f docker/docker-compose.yml run --rm vidsmasharr bench.ladder --help | grep -c robust
 ```
 
-**The NAS tree is therefore hand-patched and no longer matches any branch.**
-`bench/ladder.py` came from `ladder-robust`; **three more files were
-overwritten on 2026-08-30** with fixes that live on `ladder-robust` and not
-on `main`; everything else is `main` at `e842d30`.
+The tree got there by hand-patching, one file at a time, from what was then
+`ladder-robust` -- which has since been merged and deleted, so the command
+above originally pulled from a branch whose URL 404s now. Two earlier drafts of
+this file named two different sets of "four hand-patched files", seven distinct
+paths between them, and neither was checkable without measuring.
 
-| file | commit | pre-patch backup in `/volume1/scratch/` |
-|---|---|---|
-| `bench/ladder.py` | (session 4) | `ladder.py.main.bak` |
-| `app/work/worker.py` | `50c244b` | `worker.py.main.bak` |
-| `app/work/streams.py` | `2561f41` | `streams.py.main.bak` |
-| `app/plan/estimate.py` | `e373bb0` | `estimate.py.main.bak` |
+**Measured 2026-08-31 by md5 sweep -- the drift is gone.** Every tracked file
+under `app/`, `bench/`, `docker/` and `config/` was hashed on the NAS and
+against the blobs at `485c74c`:
 
-Four hand-patched files is past the point where this should be a checkout.
-Getting git onto the box, or re-deploying every file from one branch, is the
-cheapest thing left that stops this getting worse.
+| | result |
+|---|---|
+| **59 of 64** tracked files | **byte-identical to `main` at `485c74c`** |
+| 4 files | stale, all under `tests/` -- `test_arr_guard`, `test_ladder`, `test_plan`, `test_work`, still at `e842d30` |
+| 1 file | `config/config.example.yaml`, an older revision than either commit |
+| absent | none -- nothing tracked is missing from the box |
+
+**The running image was hashed too, not just the tree**, because the image
+bakes the source in and nothing warns you when they disagree: ten files
+including `worker.py`, `streams.py`, `estimate.py` and `ladder.py` all match
+`485c74c` inside the container. **The tree was rebuilt after the last patch.**
+
+So the NAS is effectively a clean `485c74c` checkout for every purpose that
+runs. **The four stale tests are inert** -- `docker/Dockerfile` copies only
+`app` and `bench`, so `tests/` is never in the image and cannot be run there.
+The stale `config.example.yaml` never executes either; it only misleads
+whoever copies from it next, and it predates the `tautulli` block, the *arr
+`timeout` and `notify_on_replace`, and the corrected `path_map` comment. The
+live `config/config.yaml` is unaffected and correct.
+
+Pre-patch backups still sit in `/volume1/scratch/`: `ladder.py.main.bak`,
+`worker.py.main.bak`, `streams.py.main.bak`, `estimate.py.main.bak`. They are
+superseded now and safe to delete.
+
+**Two pieces of litter found by the same sweep**, both root-owned, neither
+touching anything that runs:
+
+- **`config/config/`, and `config/config/config/`, four levels deep** -- an
+  earlier bind mount pointed at itself. Each level holds its own stale
+  `profiles.yaml` and `vidsmasharr.db`, all dated 2026-08-28. The **127 KB**
+  `vidsmasharr.db` in there is not the real one; the real one is **45 MB** at
+  `config/vidsmasharr.db`. Point a command at the wrong one and it will
+  silently look like a library of nothing.
+- **`config/.config.yaml.swp`** -- a vim swap file from a killed editor session
+  on 2026-08-30. Harmless until someone opens `config.yaml` in `vi` and gets a
+  recovery prompt.
 
 **How to write to that tree at all**, since it is root-owned and the sudo
 grant covers only the docker binary -- `sudo cp` and `sudo curl` both fail
@@ -195,7 +227,7 @@ grainy) topped out at 90.8 and never reached it at all. Because the VMAF curves
 were pooled by minimum *before* interpolating, that one clip dragged the pooled
 curve below the target everywhere and the rung fell off the end of the sweep.
 
-`bench.ladder --robust` (branch `ladder-robust`, off by default) interpolates
+`bench.ladder --robust` (on `main` since the merge, off by default) interpolates
 each clip separately first, names and sets aside the ones that cannot reach the
 target, and takes the second-hardest of the survivors. The argument for it: a
 file harder than the rung is already caught per file by verification failing
@@ -635,7 +667,15 @@ Movies library would attempt and probably fail on the AnimeRG filename.
 and the scratch copies are the ones `app work --install-held` needs -- do not
 delete those instead.
 
-#### What to check on the TVs, and what happens after
+#### What to check on the TVs -- CHECKED 2026-08-31, both good
+
+**Both files were watched on both TVs on 2026-08-31 and passed.** That closes
+the last thing standing between the pipeline and the library: the outputs are
+confirmed good on the hardware that has to play them, not merely confirmed to
+have been produced. Next is `delete_original_on_success` on and
+`app work --install-held`, then delete `/volume1/data/media/vidsmasharr-test/`.
+
+What was checked, and what happens after:
 
 - **Direct Play, not transcode**, on both. That is the assumption the whole
   ladder rests on.
@@ -760,16 +800,20 @@ that the queue already ranks first.
 how the second half of the day got done. See "Driving the NAS from the
 workstation" near the top, including how to revoke it.
 
-The NAS tree is now hand-patched with **four** files from `ladder-robust`
-(`bench/ladder.py`, `app/config.py`, `app/identity/arr.py`,
-`app/guard/arr_guard.py`); everything else is `main` at `e842d30`.
+The NAS tree is now hand-patched with files from `ladder-robust` (since merged
+into `main`). This paragraph and the table near the top of the file once named
+two different sets of four; **the md5 sweep of 2026-08-31 settled it** -- the
+tree and the image are `485c74c` throughout, bar four inert test files. See
+"Git on the NAS does not work".
 
 ---
 
 ## Session 5 (2026-08-29): the wider benchmark, and what it broke
 
-Branch `ladder-robust`, 336 tests. Not merged to `main` -- it changes how every
-rung is chosen and deserves a real batch behind it first.
+Branch `ladder-robust`, 336 tests. Not merged to `main` at the time -- it
+changes how every rung is chosen and deserved a real batch behind it first.
+**It was merged afterwards and the branch deleted; `main` at `485c74c` carries
+all of it.**
 
 ```
 bench/ladder.py    + --robust: per-clip interpolation, second-hardest rung,
@@ -1099,7 +1143,7 @@ overnight encoding to do exhaustively, so queue order decides everything.
 `app plan` for the real number rather than quoting this one.
 
 - Repo: https://github.com/Belgregor71/vidsmasharr (public)
-- `main`, local and remote in sync at `e842d30`
+- `main`, local and remote in sync at `e842d30` (that was then; `485c74c` now)
 - **Phases 0-4 are all built**, 323 tests. What remains is running them against
   the real box -- see the top of this file
 - **The NAS cannot run git.** The claim that it is a working checkout was
