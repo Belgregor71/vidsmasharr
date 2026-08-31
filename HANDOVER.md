@@ -8,11 +8,23 @@ unverified ones.
 
 ## NEXT SESSION: start here
 
-**All five phases are built and every code question is answered.** What remains
-is running it against the real box, and the order matters: the cheap checks
-that could invalidate everything come before the expensive work.
+**The pipeline is live and working unattended.** All five phases are built,
+every code question is answered, and as of 2026-09-01 06:04 the remux tier is
+running on the real library under a supervisor on the NAS. Nothing needs
+starting. Read "Where the remux run got to" below before touching anything,
+because the box is busy and every container start competes with it.
 
-### State at a glance (2026-08-31)
+**First thing to check, in one command:**
+
+```sh
+ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179 'tail -20 ~/remux-211.log'
+```
+
+If the last supervisor line says `DONE`, the tier is finished and the first
+job of the session is to **put `max_deletes_per_run` back to 50** -- see the
+open items at the end of session 7.
+
+### State at a glance (2026-09-01 06:04)
 
 | | where it stands |
 |---|---|
@@ -28,15 +40,16 @@ that could invalidate everything come before the expensive work.
 | Phase 1 on the real library | **DONE 2026-08-30.** 23,287 files, 23,078 probed, 9 unprobeable, all resolved |
 | Duplicates | **238 group(s), 684 files, 166 GB reclaimable.** 150 need a human decision |
 | Plan | **RE-RUN 2026-08-30** after the estimator fix. 4,850 jobs, 5,437 GB, 2,868 encode-hours |
-| First real jobs | **INSTALLED 2026-08-31.** Three, not the two this file recorded -- two remuxes and the first real encode. 8.00 GB reclaimed, 3 originals deleted, 0 failed |
+| First real jobs | **INSTALLED 2026-08-31.** Three, not the two this file recorded -- two remuxes and the first real encode. 8.00 GB reclaimed, 0 failed |
+| Remux tier | **RUNNING since 2026-08-31 17:32.** 70 files done, **197.8 GB reclaimed**, 3 quarantined, 139 left. Supervised; needs nothing |
 | Phase 3 deadlock | **FIXED `50c244b`.** Nothing ran before it; do not run an older build |
 | Dropped fonts | **FIXED `2561f41`.** The first output lost 15 font attachments. See below |
 | Estimator | **FIXED `e373bb0`** (AAC by channel). Look Back landed exact; Kiki still 30% over |
-| Outcomes recorded | **3.** `app calibrate` needs 8 before it will produce a factor -- five more |
+| Outcomes recorded | **70 -- but only 1 is an encode.** `app calibrate` needs 8 *per model*, and 69 of these are `stream-copy` remuxes with no encoder and no VMAF. **Seven more encodes**, not seven more files |
 | Playback on TV | **PASSED 2026-08-31.** All three watched on both TVs -- both remuxes and the encode -- all good |
 | Test copies | **deleted 2026-08-31**, after confirming the copy was byte-identical to the installed file. `/media` is back to `Anime movies music tv youtube` |
-| Next action | **The remux tier: 217 files, 456 GB, ~11 hours.** `app work` reaches them first unprompted; the queue is ranked by GB/hour |
-| Media library | **FIRST WRITES 2026-08-31.** Three files replaced in place, three originals deleted. `delete_original_on_success` is now **true**; `dry_run` is still **true** |
+| Next action | **Wait for the tier to finish, then restore `max_deletes_per_run` to 50.** After that: the three quarantined failures, then the encode tier |
+| Media library | **BEING REWRITTEN.** 70 files replaced in place so far, originals deleted. `delete_original_on_success` **true**, `dry_run` **true**, `max_deletes_per_run` **220 (must go back to 50)** |
 
 ---
 
@@ -840,6 +853,77 @@ the last remux into the encode tier. When the count reaches 0 it exits.
 - **`-v .../config:/config:ro` does not work for the counter** -- the database
   is in WAL mode and sqlite needs the *directory* writable even to read. Mount
   it read-write, as compose does.
+
+### Where the remux run got to (as of 2026-09-01 06:04)
+
+Measured from the `outcome` table, which is authoritative -- the log's own
+totals read slightly low:
+
+| | |
+|---|---|
+| remux outcomes | **69** |
+| reclaimed | **197.8 GB** actual against 202.6 GB estimated -- **0.98x** |
+| CPU spent | **6.9 h** actual against 2.4 h estimated -- **2.89x** |
+| still queued | **139** in the unbroken remux run, 143 remuxes in total |
+| quarantined | **3** |
+
+**The savings estimates are excellent and the CPU estimates are not.** Saving
+lands within 2% in aggregate; time is under-predicted by nearly 3x, and the
+worst individual cases are 5-6.6x -- Arthur the King, Avatar: The Way of Water,
+No Time to Die. The pattern is big Bluray movie rips with lossless or
+many-channel audio; the estimate was calibrated on Ghibli-style anime remuxes
+that finish in 30-50 seconds. **So the "456 GB in 11 hours" headline was right
+about the GB and wrong about the hours** -- read it as roughly 30, and expect
+the same optimism anywhere `est_cpu_seconds` appears.
+
+Worth confirming when the box is idle, because it would explain the rate: a
+job on a `TrueHD Atmos 7.1` source was writing its output at **3.1 MB/s**,
+where a pure stream copy should run at disk speed. If the surplus-audio work
+is *transcoding* lossless tracks rather than dropping them, that is the whole
+cost, and it is invisible in the plan. Check `job.cmd` for one of the TrueHD
+titles.
+
+### Three failures, all caught by verification
+
+Three outputs were refused and quarantined, originals untouched:
+
+```
+The Bad Guys 2 (2025)              output 6226.2s vs source 6435.9s   -210s
+A Big Bold Beautiful Journey (2025) output 6556.9s vs source 6643.2s    -86s
+Wicked For Good (2025)             output 8252.3s vs source 8521.6s   -269s
+```
+
+All three are **2025 Bluray-1080p movie rips** with EAC3 or DTS-HD MA. The
+structural check does exactly what it should -- a short output is refused
+rather than installed -- and the outputs are kept at
+`/volume1/scratch/vidsmasharr/quarantine/` (29.4 GB) with a reason file beside
+each. **Nobody has diagnosed why the remux comes out short**, and at 3 in 69
+it should be expected to recur across the remaining 139. That is the most
+interesting open question in the project right now.
+
+A fourth, *Wonka*, failed with `file no longer exists on disk` -- the source
+vanished between planning and execution, presumably an *arr replacing it. Its
+decision went to `skipped`. That one is working as designed.
+
+### Open items for the next session, in order
+
+1. **Restore `safety.max_deletes_per_run` to 50** once the tier finishes. It is
+   at 220 only to let the 211-file block run unattended. Backup of the
+   original is `config/config.yaml.bak-cap50`.
+2. **Diagnose the three short-output remuxes.** Same failure, same class of
+   source. Start from the quarantined files and the `job.cmd` that produced
+   them.
+3. **Fix `--now`.** Its help says "still pauses for streams"; `worker.py`
+   builds the window directly and never calls `may_work_now`, where the
+   Tautulli check lives. Fix the code or fix the help -- either is fine, the
+   present state is a trap.
+4. **Understand why Look Back triggered no *arr rescan** while Failure Frame
+   and Kiki did. Cheap now, expensive at 200 files.
+5. **Then, and only then, the encode tier.** 4,629 files, ~2,855 hours, and a
+   ladder calibrated on live-action TV that has met exactly one anime file.
+   `app calibrate` needs **7 more encode outcomes** before it can say anything.
+
+Do not start the encode tier while the delete ceiling is 220.
 
 ### The queue after installing
 
