@@ -18,7 +18,7 @@ that could invalidate everything come before the expensive work.
 |---|---|
 | Code | Phases 0-4 built, 345 tests, **`main` at `485c74c`**. `ladder-robust` is merged and deleted -- everything it carried is on `main`, which is the only branch on the remote |
 | NAS repo | **NOT a git checkout -- `git` is not on PATH.** But md5-swept 2026-08-31: tree *and* image are `485c74c` throughout, bar 4 inert test files. See below |
-| TV ladder | **written to `profiles.yaml` 2026-08-29** -- hevc_vaapi qp 22 -> 39% at 1080p |
+| TV ladder | **written to `profiles.yaml` 2026-08-29.** The live file says `preferred_encoder: hevc_qsv`, tv/1080p at `global_quality 21`, `target_vmaf 92`, expected ratio 0.3576 -- **not** the `hevc_vaapi qp 22` this row claimed until 2026-08-31 |
 | Movie ladder | **absent, deliberately** -- no valid movie calibration exists yet |
 | Wider TV benchmark | **finished 2026-08-29**, folded in, 160 measurements total |
 | Direct play | **VERIFIED 2026-08-30 -- Direct Play on both TVs.** No longer a blocker |
@@ -28,15 +28,15 @@ that could invalidate everything come before the expensive work.
 | Phase 1 on the real library | **DONE 2026-08-30.** 23,287 files, 23,078 probed, 9 unprobeable, all resolved |
 | Duplicates | **238 group(s), 684 files, 166 GB reclaimable.** 150 need a human decision |
 | Plan | **RE-RUN 2026-08-30** after the estimator fix. 4,850 jobs, 5,437 GB, 2,868 encode-hours |
-| First real jobs | **DONE 2026-08-30.** Two remuxes, verified, 3.76 GiB, `held` in scratch |
+| First real jobs | **INSTALLED 2026-08-31.** Three, not the two this file recorded -- two remuxes and the first real encode. 8.00 GB reclaimed, 3 originals deleted, 0 failed |
 | Phase 3 deadlock | **FIXED `50c244b`.** Nothing ran before it; do not run an older build |
 | Dropped fonts | **FIXED `2561f41`.** The first output lost 15 font attachments. See below |
 | Estimator | **FIXED `e373bb0`** (AAC by channel). Look Back landed exact; Kiki still 30% over |
-| Outcomes recorded | **2.** `app calibrate` needs 8 before it will produce a factor |
-| Playback on TV | **PASSED 2026-08-31.** Both test files watched on both TVs, both good against the step 6 checks |
-| Test copies | `/volume1/data/media/vidsmasharr-test/` -- **testing is done; delete this folder.** Not the scratch copies |
-| Next action | **Turn on `delete_original_on_success`, then `app work --install-held`** -- installs the two outputs already in scratch rather than redoing the work |
-| Media library | **untouched.** Nothing has been encoded, moved or deleted |
+| Outcomes recorded | **3.** `app calibrate` needs 8 before it will produce a factor -- five more |
+| Playback on TV | **PASSED 2026-08-31.** All three watched on both TVs -- both remuxes and the encode -- all good |
+| Test copies | **deleted 2026-08-31**, after confirming the copy was byte-identical to the installed file. `/media` is back to `Anime movies music tv youtube` |
+| Next action | **The remux tier: 217 files, 456 GB, ~11 hours.** `app work` reaches them first unprompted; the queue is ranked by GB/hour |
+| Media library | **FIRST WRITES 2026-08-31.** Three files replaced in place, three originals deleted. `delete_original_on_success` is now **true**; `dry_run` is still **true** |
 
 ---
 
@@ -724,6 +724,128 @@ never before. Re-run `app plan` afterwards -- the queue order is the point.
 - **A size ratio is only comparable within one rung.** Under `--robust` two
   encoders can survive different clips, so the printed ratios are averages over
   different populations. That is what the clips column is for.
+
+---
+
+## Session 7 (2026-08-31): the library is no longer untouched
+
+**Three files were installed and three originals deleted. 8.00 GB reclaimed,
+nothing failed.** This is the first time anything in `/volume1/data/media` has
+been rewritten, and the switch that allowed it -- `delete_original_on_success`
+-- is now **true** in the NAS `config.yaml`. `dry_run` was deliberately left
+**true**: `--install-held` returns before the dry-run check, so it is
+unaffected, and leaving it on stops a stray `app work` from starting a night of
+encoding nobody asked for. A pre-flip copy sits at
+`config/config.yaml.bak-before-install-held`.
+
+### There were three held outputs, not two
+
+This file said two remuxes. The database said three, and the third mattered:
+
+| decision | file | action | in | out |
+|---|---|---|---|---|
+| 658 | Look Back (2024) | remux | 4.17 GiB | 1.53 GiB |
+| 1887 | Kiki's Delivery Service | remux | 2.82 GiB | 1.69 GiB |
+| **435** | **Failure Frame S01E08** | **encode** | **4.98 GiB** | **0.75 GiB** |
+
+Job 5 finished at **14:52 on 2026-08-30, 85 minutes after the session 6
+handover was committed at 13:27**, so the file was accurate when written and
+wrong within the hour. **`install_held` has no per-decision filter** -- it
+installs every `held` row in one pass -- so "install the two remuxes" was never
+an option the command supported. Check `state='held'` in the database before
+running it, not the prose in this file.
+
+### What the first real encode actually measured
+
+- **85% smaller, where the rung predicts 64%.** `expected_size_ratio` is
+  0.3576, which puts the output at ~1.78 GiB; it landed at 0.75 GiB.
+- **VMAF mean 94.09 over three samples -- 95.96, 94.99, 91.31 -- against a
+  `target_vmaf` of 92.** Verification scores each sample's *mean* against
+  `target - vmaf_fail_margin`, so one sample at 91.31 passed on the floor
+  rather than comfortably. The `min` of 77.85 recorded on the job row is the
+  worst frame inside a sample and is not what verification judges.
+- **The ladder was calibrated on live-action TV** -- Fringe, Willow, Minx,
+  Alex Rider, Secret Level -- and this was anime. The rung's own note admits
+  the calibration clips disagreed by 42 points of size. Flat cel animation
+  compresses far better than the clips that set the rung, which is why the
+  saving beat the estimate so badly, and it is also where VMAF is most
+  forgiving. It was watched on both TVs before installing, and passed.
+
+An `-sn` in the encode command looks alarming and is not: that source carries
+no subtitle or attachment streams at all. Source and output match
+stream-for-stream -- h264+FLAC jpn in, hevc+FLAC jpn out, 1451 s both, audio
+copied rather than re-encoded.
+
+### Two things to watch, neither a blocker
+
+- **Installed files land `root:root 644`**, while sibling media files are
+  `1028:users`. Plex reads them fine and both *arrs rescanned, so nothing is
+  broken today; it would matter if an *arr ever runs as a non-root user and
+  needs to rename or delete one.
+- **Only two of the three installs triggered an *arr rescan** -- Sonarr for
+  Failure Frame, Radarr for Kiki, nothing for Look Back. Worth understanding
+  before a bulk run makes it 200 files instead of one.
+
+### The remux block was launched the same day
+
+**211 files, 450.0 GB, ~10.8 hours**, started 2026-08-31 17:32. The queue's
+first 211 pending jobs are an unbroken run of remuxes; the first encode sits at
+position 212, so `--limit 211` runs the whole cheap tier and stops before
+anything lossy. Four stray remuxes sit further down the queue and were left.
+
+Config changes this needed, **one of which must be put back**:
+
+| setting | was | now | |
+|---|---|---|---|
+| `schedule.night_start` | 23:00 | **22:00** | permanent, at the user's request -- rarely up past 21:00 |
+| `safety.max_deletes_per_run` | 50 | **220** | **TEMPORARY. Restore to 50 once the remux block finishes.** |
+
+The delete ceiling is the thing that decides where a run stops, not `--limit`:
+at 50 the run would have done ~107 GB and printed "hit the 50-delete ceiling
+for one run", which is a clean stop and easy to mistake for completion.
+Backups of both edits are in `config/`, named `.bak-before-window-change` and
+`.bak-cap50`.
+
+### Two scheduler findings, one of which needs fixing
+
+**The worker EXITS when Tautulli reports a stream. It does not wait.** The
+first launch died within seconds -- someone was watching -- and nothing would
+have resumed it. For a 10-hour unattended run this is fatal: anyone starting
+Plex at 20:00 ends the night's work permanently, and the log looks like a
+tidy, deliberate stop.
+
+**`--now` bypasses the stream check, and its help text says it does not.**
+`work.add_argument("--now", ...)` promises "ignore the schedule window (still
+pauses for streams)", but `worker.py` builds its `WorkWindow` directly when
+`ignore_schedule` is set, never calling `may_work_now`, which is where
+`someone_is_watching` lives. So `--now` fights Plex for `/dev/dri` and the
+disks -- exactly what the setting exists to prevent. **Fix the code or fix the
+help; do not use `--now` while anyone is watching.**
+
+### The supervisor, and why its limit is computed rather than fixed
+
+`~/remux-loop.sh` on the NAS relaunches the worker every 15 minutes until the
+remux tier is done, which is what makes an overnight run survive somebody
+watching an episode.
+
+**Each pass recomputes `--limit` as the length of the unbroken run of remuxes
+at the head of the queue** (`~/remux_count.py`). That is the safety property,
+and it is why the limit is not simply hard-coded to 211: however many passes
+run, however they interleave with streams, the supervisor can never reach past
+the last remux into the encode tier. When the count reaches 0 it exits.
+
+- kill switch: `touch ~/remux-loop.stop` (takes effect at the next pass)
+- log: `~/remux-211.log`, both the supervisor's own lines and the worker's
+- gives up after 60 passes rather than spinning forever
+- **`-v .../config:/config:ro` does not work for the counter** -- the database
+  is in WAL mode and sqlite needs the *directory* writable even to read. Mount
+  it read-write, as compose does.
+
+### The queue after installing
+
+The three decision rows are **gone**, not moved to a new state: install deletes
+them and records an `outcome` row instead. `decision` now holds 4,847 pending,
+798 deferred, 17,639 skipped. **3 outcomes recorded**; `app calibrate` needs 8.
 
 ---
 
