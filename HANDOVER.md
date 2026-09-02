@@ -1,4 +1,4 @@
-# Handover — sessions 1–7 (2026-08-27 → 31)
+# Handover — sessions 1–8 (2026-08-27 → 09-02)
 
 Read this first. It records what is *verified* on the real hardware versus what
 is still assumed, so tomorrow doesn't re-litigate settled decisions or trust
@@ -8,48 +8,51 @@ unverified ones.
 
 ## NEXT SESSION: start here
 
-**The pipeline is live and working unattended.** All five phases are built,
-every code question is answered, and as of 2026-09-01 06:04 the remux tier is
-running on the real library under a supervisor on the NAS. Nothing needs
-starting. Read "Where the remux run got to" below before touching anything,
-because the box is busy and every container start competes with it.
+**The remux tier is finished and the box is idle.** All five phases are built,
+every code question is answered, and as of 2026-09-02 16:33 the supervisor has
+exited on its own -- no container running, no supervisor process, nothing to
+start or stop. This is the first quiet moment since 2026-08-31.
 
-**First thing to check, in one command:**
+**Do this first, before anything else:**
+
+**Restore `safety.max_deletes_per_run` to 50.** It sits at 220, which was sized
+for the 211-file remux block that has now completed. Leaving it there hands the
+encode tier -- 4,628 files -- a deletion budget four times wider than intended.
+The original is backed up at `config/config.yaml.bak-cap50`. This is a config
+edit on the NAS, so show the diff before writing it.
+
+**To confirm the state in one command:**
 
 ```sh
-ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179 'tail -20 ~/remux-211.log'
+ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179 'tail -3 ~/remux-211.log'
 ```
 
-If the last supervisor line says `DONE`, the tier is finished and the first
-job of the session is to **put `max_deletes_per_run` back to 50** -- see the
-open items at the end of session 7.
+It should end with `DONE` and `supervisor finished`. If it does not, read
+Session 8 before touching anything.
 
-### State at a glance (2026-09-01 06:04)
+### State at a glance (2026-09-02 16:35)
 
 | | where it stands |
 |---|---|
 | Code | Phases 0-4 built, 345 tests, **`main` at `485c74c`**. `ladder-robust` is merged and deleted -- everything it carried is on `main`, which is the only branch on the remote |
+| Working tree | **clean, bar a permanent `git status` lie.** 19 files show as ` M` forever: `core.autocrlf=true` fights `.gitattributes eol=lf`, so the index stat data never settles. Content hashes match the index exactly and `git diff --numstat` is empty -- there is nothing uncommitted in them. Do not "fix" them by committing; run `git config core.autocrlf false` if the noise matters |
 | NAS repo | **NOT a git checkout -- `git` is not on PATH.** But md5-swept 2026-08-31: tree *and* image are `485c74c` throughout, bar 4 inert test files. See below |
-| TV ladder | **written to `profiles.yaml` 2026-08-29.** The live file says `preferred_encoder: hevc_qsv`, tv/1080p at `global_quality 21`, `target_vmaf 92`, expected ratio 0.3576 -- **not** the `hevc_vaapi qp 22` this row claimed until 2026-08-31 |
-| Movie ladder | **absent, deliberately** -- no valid movie calibration exists yet |
-| Wider TV benchmark | **finished 2026-08-29**, folded in, 160 measurements total |
+| TV ladder | **written to `profiles.yaml` 2026-08-29.** The live file says `preferred_encoder: hevc_qsv`, tv/1080p at `global_quality 21`, `target_vmaf 92`, expected ratio 0.3576 |
+| Movie ladder | **absent, deliberately** -- no valid movie calibration exists yet. This now blocks real queued work, not just theory: see Session 8 |
 | Direct play | **VERIFIED 2026-08-30 -- Direct Play on both TVs.** No longer a blocker |
 | *arr guard | **APPLIED 2026-08-30** with `--neutralise`; second pass says "nothing to write" |
 | NAS `config.yaml` | **complete 2026-08-30.** Plex token, Tautulli key, both *arr keys, correct `path_map`. No FILL MEs left |
 | NAS access | **SSH + passwordless `docker` from the workstation**, see below |
 | Phase 1 on the real library | **DONE 2026-08-30.** 23,287 files, 23,078 probed, 9 unprobeable, all resolved |
-| Duplicates | **238 group(s), 684 files, 166 GB reclaimable.** 150 need a human decision |
-| Plan | **RE-RUN 2026-08-30** after the estimator fix. 4,850 jobs, 5,437 GB, 2,868 encode-hours |
-| First real jobs | **INSTALLED 2026-08-31.** Three, not the two this file recorded -- two remuxes and the first real encode. 8.00 GB reclaimed, 0 failed |
-| Remux tier | **RUNNING since 2026-08-31 17:32.** 70 files done, **197.8 GB reclaimed**, 3 quarantined, 139 left. Supervised; needs nothing |
-| Phase 3 deadlock | **FIXED `50c244b`.** Nothing ran before it; do not run an older build |
-| Dropped fonts | **FIXED `2561f41`.** The first output lost 15 font attachments. See below |
-| Estimator | **FIXED `e373bb0`** (AAC by channel). Look Back landed exact; Kiki still 30% over |
-| Outcomes recorded | **70 -- but only 1 is an encode.** `app calibrate` needs 8 *per model*, and 69 of these are `stream-copy` remuxes with no encoder and no VMAF. **Seven more encodes**, not seven more files |
-| Playback on TV | **PASSED 2026-08-31.** All three watched on both TVs -- both remuxes and the encode -- all good |
-| Test copies | **deleted 2026-08-31**, after confirming the copy was byte-identical to the installed file. `/media` is back to `Anime movies music tv youtube` |
-| Next action | **Wait for the tier to finish, then restore `max_deletes_per_run` to 50.** After that: the three quarantined failures, then the encode tier |
-| Media library | **BEING REWRITTEN.** 70 files replaced in place so far, originals deleted. `delete_original_on_success` **true**, `dry_run` **true**, `max_deletes_per_run` **220 (must go back to 50)** |
+| Duplicates | **238 group(s), 684 files, 166 GB reclaimable.** 150 need a human decision. Untouched |
+| **Remux tier** | **COMPLETE 2026-09-02 16:33.** 206 outcomes, **436.0 GB reclaimed**, 6 quarantined, 4 left pending behind encodes. Supervisor exited cleanly at pass 31 |
+| Estimator | Savings **0.995x** over the full tier -- essentially exact. CPU **2.16x**, and the ratio *eased* as the sample grew. See Session 8 |
+| Encode tier | **NOT STARTED.** 4,628 pending (4,973.9 GB, 2,854.9 h est), 798 deferred, 4 downscale |
+| Outcomes recorded | **207 -- but still only 1 is an encode.** `app calibrate` needs 8 *per model*; 206 are `stream-copy` remuxes with no encoder and no VMAF. **Seven more encodes**, not seven more files |
+| Playback on TV | **PASSED 2026-08-31** on the first three files. Nothing from the 206-file tier has been spot-checked on a TV |
+| Next action | **Restore `max_deletes_per_run` to 50.** Then the six quarantined files, then the movie ladder, then the encode tier |
+| Media library | **REWRITTEN IN PLACE.** 206 files replaced, originals deleted, 440.5 GB reclaimed in total. `delete_original_on_success` **true**, `max_deletes_per_run` **220 (must go back to 50)** |
+| Disk | **4.2 TB free, 86% used.** The whole remux tier moved this under 2% -- the space is in the encode tier |
 
 ---
 
@@ -740,6 +743,165 @@ never before. Re-run `app plan` afterwards -- the queue order is the point.
 
 ---
 
+## Session 8 (2026-09-02): the remux tier finished on its own
+
+Nothing was started, stopped or changed this session. The supervisor launched
+on 2026-08-31 ran to completion unattended and exited; this is the read-out.
+
+```
+[2026-09-02 16:33:49] no remuxes left at the head of the queue -- DONE
+[2026-09-02 16:33:49] supervisor finished
+```
+
+It exited the intended way -- `remux_count.py` returned 0 -- not by the kill
+switch and not by the 60-pass ceiling. It used 31 of those 60 passes.
+
+### What the tier actually did
+
+From the `outcome` table, which is authoritative:
+
+| | actual | estimated | ratio |
+|---|---|---|---|
+| remux outcomes | **206** | -- | -- |
+| reclaimed | **436.0 GB** | 438.2 GB | **0.995x** |
+| CPU spent | **22.58 h** | 10.46 h | **2.16x** |
+
+Plus the single encode from 08-31: **440.5 GB reclaimed by the pipeline to
+date**, across 207 outcomes.
+
+**The savings estimator is now proven, and the CPU estimator is less wrong than
+Session 7 concluded.** Saving landed within 0.5% over 206 files. The CPU ratio
+*fell as the sample grew*:
+
+| after | CPU ratio |
+|---|---|
+| 69 files | 2.89x |
+| 111 files | 2.71x |
+| 206 files | **2.16x** |
+
+Session 7's "read every `est_cpu_seconds` as a third of the truth" was
+calibrated on the worst stretch of the run -- the big Bluray rips came early,
+because the queue is ranked by GB/hour. **Use ~2.2x for a whole tier**, and
+still expect 5-6x on an individual lossless-audio Bluray. For the encode tier
+that is ~6,200 h against its 2,855 h estimate, not the ~8,600 h a 3x rule
+predicts. Both are scope pressure, not a schedule.
+
+### The schedule worked exactly as designed
+
+211 files attempted across 30 working passes -- but **only 5 passes did any
+work**. The other 25 found an active Plex stream and exited within seconds.
+
+| pass | attempted | succeeded | failed | reclaimed | elapsed |
+|---|---|---|---|---|---|
+| 1 | 11 | 11 | 0 | 8.99 GB | 0.34 h |
+| 10 | 104 | 99 | 5 | 269.62 GB | 20.59 h |
+| 21 | 3 | 3 | 0 | 5.89 GB | 0.39 h |
+| 24 | 1 | 1 | 0 | 0.89 GB | 0.10 h |
+| 30 | 92 | 90 | 2 | 116.94 GB | 17.70 h |
+
+**39.1 h of work over 47 h of wall clock.** The two long unattended stretches
+did 89% of it. Nobody's viewing was interrupted, and no pass ever reached past
+the last remux into the encode tier.
+
+### The log under-reports totals by ~8% -- always use the `outcome` table
+
+The log's own `done:` lines sum to 402.4 GB across 204 entries; the database
+says 436.0 GB across 206. Two of the gap are the first real jobs from 08-31,
+which predate the supervisor's log. The rest is the log reading low per file.
+Session 7 noted the log "reads slightly low" -- it is worth more than
+"slightly", and any figure quoted from the log alone will be wrong.
+
+### Six failures now, all one signature
+
+Session 7 recorded three. The full tier produced **six**, all refused by the
+structural check with the original left intact:
+
+| file | job | output vs source | short by |
+|---|---|---|---|
+| Asteroid City (2023) | 183 | 6299.5s vs 6337.5s | 38.0s |
+| Megalopolis (2024) | 109 | 8284.1s vs 8345.0s | 60.9s |
+| Obsession (2026) | 186 | 6519.8s vs 6598.8s | 79.0s |
+| A Big Bold Beautiful Journey (2025) | 56 | 6556.9s vs 6643.2s | 86.3s |
+| The Bad Guys 2 (2025) | 72 | 6226.2s vs 6435.9s | 209.7s |
+| Wicked For Good (2025) | 73 | 8252.3s vs 8521.6s | 269.3s |
+
+**Every one is a `Bluray-1080p` x264/AVC rip with 5.1 audio**, each on 1
+attempt, each kept in `/volume1/scratch/vidsmasharr/quarantine/` with a reason
+file beside it. 6 in 211 is **2.8%** -- the rate held steady rather than being
+early bad luck.
+
+The shortfalls cluster at 38-270s, which is credits-length, not
+corruption-length. That points at trailing content the stream copy drops rather
+than at bad sources -- but **nobody has confirmed it**. Six isolated test cases
+are sitting on disk waiting for whoever picks this up. It is the only
+correctness defect the whole tier produced.
+
+A seventh, *Wonka*, went to `skipped` with `file no longer exists on disk` --
+an *arr replaced the source between planning and execution. Working as designed.
+
+### Four remuxes are still pending, and it is not a miscount
+
+`decision` still holds **4 pending remuxes** (1.4 GB). The supervisor exited
+anyway, correctly: it drains the *unbroken run of remuxes at the head of the
+queue*, and these four sit below encodes by priority.
+
+```
+encode 7.27 | encode 6.68 | encode 6.46 | encode 6.27 | encode 6.16 | encode 5.95
+remux  5.82 | remux  5.60 | encode 5.55 | encode 5.38 | encode 5.38 | remux 5.36
+```
+
+The head-run ended at 5.95, where the first encode outranks them. They will be
+picked up early in the encode tier.
+
+All four are `/media/movies` and all four carry the same reason: *"no video
+work (no calibrated setting for movie at 1080p; benchmark some content of that
+kind), but dropping N audio track(s) frees 0.3 GB for almost no CPU"*. They are
+audio-only jobs **because the movie ladder is missing**. That open question now
+has a concrete cost attached, not just a theoretical one.
+
+**A message bug worth fixing while in there:** decision 115 (*A Quiet Place*)
+reads `dropping 0 audio track(s) frees 0.3 GB`. Zero tracks and 0.3 GB is
+contradictory -- probably attachment or subtitle stripping that the reason
+string does not mention.
+
+### The 798 deferred encodes are a fairness cap -- close this question
+
+Every deferred row says `deferred: this title already has 25 file(s) queued`.
+It is a per-title throttle stopping one long series from monopolising the
+queue; the top offenders are 59, 57, 46 and 44 files of a single show. They
+requeue on the next `app plan` once the first 25 land. **Not a bug, nothing to
+investigate.**
+
+### What this session did NOT check
+
+Stated plainly so it is not mistaken for verified:
+
+- **The TrueHD 3.1 MB/s hypothesis from Session 7 is still unconfirmed.** No
+  one looked at `job.cmd` for a lossless-audio title. The 2.16x figure makes it
+  less urgent but does not answer it.
+- **`--now` is still a trap** -- help text and `worker.py` still disagree.
+- **The Look Back *arr-rescan question is still open.** Sonarr timed out on
+  `/series` repeatedly through this run (Radarr never did), which may be the
+  same thing or may be unrelated.
+- **Nothing from the 206-file tier has been watched on a TV.** Only the first
+  three files were ever spot-checked.
+
+### Open items for the next session, in order
+
+1. **Restore `safety.max_deletes_per_run` to 50.** Backup at
+   `config/config.yaml.bak-cap50`. Do this before the encode tier, not after.
+2. **Diagnose the six short-output remuxes.** One bug, six reproductions,
+   already isolated. Start from a quarantined file and its `job.cmd`.
+3. **Calibrate the movie ladder.** Still needs a fat H.264 BluRay rip at 8-15
+   Mbps -- see the standing warning about invalid sources. It blocks every
+   movie encode and the 4 leftover remuxes.
+4. **Fix `--now`**, and settle the Look Back / Sonarr rescan question.
+5. **Then the encode tier.** 4,628 files, ~6,200 real hours at the measured
+   ratio, on a ladder that has met exactly one anime file. `app calibrate`
+   still needs **7 more encode outcomes**.
+
+---
+
 ## Session 7 (2026-08-31): the library is no longer untouched
 
 **Three files were installed and three originals deleted. 8.00 GB reclaimed,
@@ -856,6 +1018,10 @@ the last remux into the encode tier. When the count reaches 0 it exits.
 
 ### Where the remux run got to (as of 2026-09-01 06:04)
 
+> **Superseded 2026-09-02 -- the tier finished.** These are mid-run
+> figures from a third of the way through, and the CPU ratio below (2.89x)
+> is the worst stretch, not the tier. See Session 8 for the final numbers.
+
 Measured from the `outcome` table, which is authoritative -- the log's own
 totals read slightly low:
 
@@ -885,6 +1051,9 @@ titles.
 
 ### Three failures, all caught by verification
 
+> **Superseded 2026-09-02: there were six, not three**, same signature and
+> the same 2.8% rate. See Session 8 for the full table.
+
 Three outputs were refused and quarantined, originals untouched:
 
 ```
@@ -906,6 +1075,9 @@ vanished between planning and execution, presumably an *arr replacing it. Its
 decision went to `skipped`. That one is working as designed.
 
 ### Open items for the next session, in order
+
+> **Superseded 2026-09-02 by Session 8's list.** Item 1 is still open and
+> still first; item 2 is now six files; items 3 and 4 are untouched.
 
 1. **Restore `safety.max_deletes_per_run` to 50** once the tier finishes. It is
    at 220 only to let the 211-file block run unattended. Backup of the
