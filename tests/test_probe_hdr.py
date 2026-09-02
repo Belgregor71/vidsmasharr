@@ -6,6 +6,8 @@ permanently, with the original already deleted. Every case that should be
 protected is asserted explicitly.
 """
 
+import pytest
+
 from app.scan.probe import detect_hdr, parse_probe_json
 
 SDR_1080P = {
@@ -119,3 +121,37 @@ def test_file_with_no_video_stream_is_unknown_not_sdr():
     info = parse_probe_json("/x.mkv", 1000, data)
     assert info.hdr_type == "unknown"
     assert info.is_protected_hdr is True
+
+
+def _with_video(video_stream, duration="8521.568000"):
+    return parse_probe_json(
+        "/x.mkv", 1000,
+        {"format": {"duration": duration, "bit_rate": "5000000",
+                    "format_name": "matroska,webm"},
+         "streams": [{**SDR_1080P, "codec_type": "video", **video_stream}]},
+    )
+
+
+def test_video_duration_is_read_from_a_language_suffixed_matroska_tag():
+    """mkvmerge writes DURATION-eng, not DURATION. Reading only the bare tag
+    misses it on most Bluray rips -- which is how six good remuxes came to be
+    measured against their container length instead of their picture."""
+    info = _with_video({"tags": {"language": "eng",
+                                 "DURATION-eng": "02:17:32.244000000"}})
+    assert info.v_duration_s == pytest.approx(8252.244)
+    assert info.duration_s == pytest.approx(8521.568)
+
+
+def test_video_duration_is_read_from_a_bare_duration_tag():
+    info = _with_video({"tags": {"DURATION": "01:44:59.460000000"}})
+    assert info.v_duration_s == pytest.approx(6299.46)
+
+
+def test_video_duration_prefers_the_stream_field_when_the_container_has_one():
+    info = _with_video({"duration": "6299.46",
+                        "tags": {"DURATION-eng": "99:00:00.000000000"}})
+    assert info.v_duration_s == pytest.approx(6299.46)
+
+
+def test_video_duration_is_none_when_nothing_records_it():
+    assert _with_video({"tags": {"language": "eng"}}).v_duration_s is None

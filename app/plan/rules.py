@@ -308,12 +308,25 @@ def decide(facts: FileFacts, config, ladder, estimator) -> PlannedDecision:
     # Nearly free, so it is worth a look even when the video is a lost cause.
     remux = estimator.remux(facts, config)
     if remux.saved_bytes >= policy.audio_remux_min_saving_bytes:
+        # Say where the saving actually comes from. Dropping tracks is only one
+        # of the three ways a remux gets smaller: the kept track is often
+        # *shrunk* instead (decision 115 keeps its only audio stream and
+        # re-encodes 8-channel EAC3 down to 640k, which is the whole 0.3 GB),
+        # and with neither of those what remains is the container repack.
+        # Reporting the second case as "dropping 0 audio track(s) frees 0.3 GB"
+        # read as a bug for two sessions running.
+        dropped = remux.detail.get("dropped_tracks", 0)
+        if dropped:
+            freed_by = f"dropping {dropped} audio track(s) frees"
+        elif remux.detail.get("audio_transcode"):
+            freed_by = "re-encoding the audio frees"
+        else:
+            freed_by = "repacking the container frees"
         return PlannedDecision(
             file_id=facts.file_id,
             action=REMUX,
             reason=(
-                f"no video work ({blocked}), but dropping "
-                f"{remux.detail.get('dropped_tracks', 0)} audio track(s) frees "
+                f"no video work ({blocked}), but {freed_by} "
                 f"{remux.saved_bytes / 1024**3:.1f} GB for almost no CPU"
             ),
             profile="stream copy",

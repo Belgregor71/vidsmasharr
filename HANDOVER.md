@@ -1,4 +1,4 @@
-# Handover — sessions 1–8 (2026-08-27 → 09-02)
+# Handover — sessions 1–9 (2026-08-27 → 09-02)
 
 Read this first. It records what is *verified* on the real hardware versus what
 is still assumed, so tomorrow doesn't re-litigate settled decisions or trust
@@ -8,18 +8,23 @@ unverified ones.
 
 ## NEXT SESSION: start here
 
-**The remux tier is finished and the box is idle.** All five phases are built,
-every code question is answered, and as of 2026-09-02 16:33 the supervisor has
-exited on its own -- no container running, no supervisor process, nothing to
-start or stop. This is the first quiet moment since 2026-08-31.
+**The remux tier is finished, the delete ceiling is back to 50, and the only
+correctness defect the tier produced turned out not to be a defect.** The box
+is idle -- no container running, no supervisor process, nothing to start or
+stop.
 
-**Do this first, before anything else:**
+**The one thing to know before you touch anything: the workstation and the NAS
+are no longer running the same code.** Session 9 fixed three things in `app/`
+and they are **committed nowhere and deployed nowhere**. The NAS image still
+verifies the old way. Nothing is broken by that -- the box is idle -- but
+re-running a quarantined file on the NAS today will fail exactly as it did
+before, and the reason will be the stale image, not the file.
 
-**Restore `safety.max_deletes_per_run` to 50.** It sits at 220, which was sized
-for the 211-file remux block that has now completed. Leaving it there hands the
-encode tier -- 4,628 files -- a deletion budget four times wider than intended.
-The original is backed up at `config/config.yaml.bak-cap50`. This is a config
-edit on the NAS, so show the diff before writing it.
+**Do this first, before anything else: decide whether to ship Session 9's
+fix.** It is written, it has tests, and it has been replayed against the real
+ffprobe output of all six quarantined pairs. It is not deployed. Shipping it
+means a commit, a `curl` of the changed files onto the NAS and a rebuild --
+the pattern is below under "How code actually got deployed".
 
 **To confirm the state in one command:**
 
@@ -30,12 +35,12 @@ ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179 'tail -3 ~/remux-211.log'
 It should end with `DONE` and `supervisor finished`. If it does not, read
 Session 8 before touching anything.
 
-### State at a glance (2026-09-02 16:35)
+### State at a glance (2026-09-02 17:40)
 
 | | where it stands |
 |---|---|
-| Code | Phases 0-4 built, 345 tests, **`main` at `485c74c`**. `ladder-robust` is merged and deleted -- everything it carried is on `main`, which is the only branch on the remote |
-| Working tree | **clean, bar a permanent `git status` lie.** 19 files show as ` M` forever: `core.autocrlf=true` fights `.gitattributes eol=lf`, so the index stat data never settles. Content hashes match the index exactly and `git diff --numstat` is empty -- there is nothing uncommitted in them. Do not "fix" them by committing; run `git config core.autocrlf false` if the noise matters |
+| Code | Phases 0-4 built, **356 tests**, `main` still at `485c74c`. `ladder-robust` is merged and deleted -- everything it carried is on `main`, which is the only branch on the remote. **Session 9's changes to `probe.py`, `verify.py`, `worker.py` and `rules.py` are uncommitted and undeployed** |
+| Working tree | **7 files really are modified** (Session 9: `probe.py`, `verify.py`, `worker.py`, `rules.py`, three test files) **on top of a permanent `git status` lie.** 19 files show as ` M` forever: `core.autocrlf=true` fights `.gitattributes eol=lf`, so the index stat data never settles. Those 19 have empty `git diff --numstat` and nothing uncommitted in them -- do not "fix" them by committing. `git diff --stat` separates the real from the phantom; run `git config core.autocrlf false` if the noise matters |
 | NAS repo | **NOT a git checkout -- `git` is not on PATH.** But md5-swept 2026-08-31: tree *and* image are `485c74c` throughout, bar 4 inert test files. See below |
 | TV ladder | **written to `profiles.yaml` 2026-08-29.** The live file says `preferred_encoder: hevc_qsv`, tv/1080p at `global_quality 21`, `target_vmaf 92`, expected ratio 0.3576 |
 | Movie ladder | **absent, deliberately** -- no valid movie calibration exists yet. This now blocks real queued work, not just theory: see Session 8 |
@@ -46,12 +51,13 @@ Session 8 before touching anything.
 | Phase 1 on the real library | **DONE 2026-08-30.** 23,287 files, 23,078 probed, 9 unprobeable, all resolved |
 | Duplicates | **238 group(s), 684 files, 166 GB reclaimable.** 150 need a human decision. Untouched |
 | **Remux tier** | **COMPLETE 2026-09-02 16:33.** 206 outcomes, **436.0 GB reclaimed**, 6 quarantined, 4 left pending behind encodes. Supervisor exited cleanly at pass 31 |
+| The 6 quarantined | **DIAGNOSED 2026-09-02, and they are not broken.** All six are sound remuxes that verification refused wrongly. Fixed in code, not yet deployed. ~29.4 GB of scratch to reclaim and ~6 files to re-run once it is. See Session 9 |
 | Estimator | Savings **0.995x** over the full tier -- essentially exact. CPU **2.16x**, and the ratio *eased* as the sample grew. See Session 8 |
 | Encode tier | **NOT STARTED.** 4,628 pending (4,973.9 GB, 2,854.9 h est), 798 deferred, 4 downscale |
 | Outcomes recorded | **207 -- but still only 1 is an encode.** `app calibrate` needs 8 *per model*; 206 are `stream-copy` remuxes with no encoder and no VMAF. **Seven more encodes**, not seven more files |
 | Playback on TV | **PASSED 2026-08-31** on the first three files. Nothing from the 206-file tier has been spot-checked on a TV |
-| Next action | **Restore `max_deletes_per_run` to 50.** Then the six quarantined files, then the movie ladder, then the encode tier |
-| Media library | **REWRITTEN IN PLACE.** 206 files replaced, originals deleted, 440.5 GB reclaimed in total. `delete_original_on_success` **true**, `max_deletes_per_run` **220 (must go back to 50)** |
+| Next action | **Ship or park Session 9's verification fix.** Then the movie ladder, then the encode tier |
+| Media library | **REWRITTEN IN PLACE.** 206 files replaced, originals deleted, 440.5 GB reclaimed in total. `delete_original_on_success` **true**, `max_deletes_per_run` **restored to 50 on 2026-09-02** |
 | Disk | **4.2 TB free, 86% used.** The whole remux tier moved this under 2% -- the space is in the encode tier |
 
 ---
@@ -743,6 +749,154 @@ never before. Re-run `app plan` afterwards -- the queue order is the point.
 
 ---
 
+## Session 9 (2026-09-02, later): the six failures were never failures
+
+Three things: the delete ceiling went back to 50, the quarantined remuxes were
+diagnosed, and the diagnosis says the files were fine all along.
+
+### The delete ceiling is back to 50
+
+`safety.max_deletes_per_run` was 220 for the 211-file block. It is 50 again.
+The live `config.yaml` is now byte-identical to `config/config.yaml.bak-cap50`,
+which was the only difference between them, and the value was read back through
+the app's own loader rather than trusted from the file:
+
+```
+max_deletes_per_run = 50
+delete_original_on_success = True
+dry_run = True
+night_start = 22:00
+```
+
+It was written with `cat > config.yaml` rather than `sed -i` on purpose: the
+file is root-owned with an ACL on a bind mount, and a rename would have handed
+it to `BrettGreg` and dropped the ACL. Rewriting through the same inode keeps
+both.
+
+### The six short outputs are healthy files that verification refused
+
+**Nothing is wrong with the remuxes. The check that judged them is wrong.**
+
+`check_structure` compared the output's container duration against the source's
+container duration. **A container's duration is its longest stream**, not the
+length of the picture. Every one of these six is a Bluray rip carrying a
+foreign-language dub that runs past the end of the film, and every one of the
+six jobs *deliberately dropped that dub*. So the output ended where the picture
+ends, the source's header still claimed the dub's length, and the difference was
+reported as a truncation.
+
+The shortfall equals the overhang exactly, in all six:
+
+| file | source container | source picture | overhang | reported short by |
+|---|---|---|---|---|
+| Asteroid City (2023) | 6337.5 | 6299.5 | 38.1 (rus AC3) | 38.0 |
+| Megalopolis (2024) | 8345.0 | 8284.0 | 60.9 (ita DTS) | 60.9 |
+| Obsession (2026) | 6598.8 | 6519.8 | 79.1 (pol EAC3) | 79.0 |
+| A Big Bold Beautiful Journey (2025) | 6643.2 | 6556.9 | 86.3 (ger/ita AC3) | 86.3 |
+| The Bad Guys 2 (2025) | 6435.9 | 6226.2 | 209.7 (ita EAC3) | 209.7 |
+| Wicked For Good (2025) | 8521.6 | 8252.2 | 269.3 (ita EAC3) | 269.3 |
+
+Session 8 read the 38-270s spread as "credits-length, so probably trailing
+content the stream copy drops". The length was the right clue and the wrong
+suspect: it is credits-length because a dub keeps playing over the credits.
+
+**The picture is intact.** Source video and output video agree to within a frame
+on every pair -- 6299.460 against 6299.459 on Asteroid City, 8252.244 against
+8252.2 on Wicked For Good.
+
+### Why nobody found this by reading the tags
+
+The per-stream durations *are* in the files, and a first pass looked like they
+were not. mkvmerge writes them **language-suffixed** -- `DURATION-eng`, not
+`DURATION` -- so `ffprobe -show_entries stream_tags=DURATION` returns empty on
+exactly the rips this affects. Wicked For Good looked like a file with no
+per-stream duration at all until its tags were dumped whole. Any future probe
+question here should dump the tag block rather than ask for a named tag.
+
+### The fix, and how far it has been proven
+
+- **`app/scan/probe.py`** learns `MediaInfo.v_duration_s`: the picture's own
+  length, read from the stream's `duration` field, then a `DURATION` tag, then
+  any language-suffixed `DURATION-` tag. Not persisted, so no schema change and
+  no `PROBE_VERSION` bump -- both verification call sites re-probe from disk.
+- **`app/work/verify.py`** compares picture against picture, falling back to the
+  old container comparison on either side when the picture's length is not
+  recorded.
+- 356 tests pass, up from 345.
+
+**It was replayed against the real files, not just unit tests.** The exact
+ffprobe JSON of all six source/output pairs was pulled off the NAS and fed
+through the new parser and the new check:
+
+```
+file                                 src fmt   src vid   out fmt   out vid   old    new
+A Big Bold Beautiful Journey (2025)    6643.2    6556.9    6556.9    6556.9   FAIL   PASS
+Asteroid City (2023)                  6337.5    6299.5    6299.5    6299.5   FAIL   PASS
+Megalopolis (2024)                    8345.0    8284.0    8284.1    8284.0   FAIL   PASS
+Obsession (2026)                      6598.8    6519.8    6519.8    6519.8   FAIL   PASS
+The Bad Guys 2 (2025)                 6435.9    6226.2    6226.2    6226.2   FAIL   PASS
+Wicked For Good (2025)                8521.6    8252.2    8252.3    8252.2   FAIL   PASS
+```
+
+Six for six, and all six fail under the shipped rule. A remux has no VMAF gate,
+so a structural pass is the whole verdict for these files.
+
+**What this does not prove.** No quarantined output has been played. The check
+now says the picture is the right length and the audio is the track that was
+asked for; it does not say the file looks right on a TV. Watch one before the
+originals go.
+
+### `--now` no longer fights Plex
+
+Its help has always said "ignore the schedule window (still pauses for
+streams)". The code built its `WorkWindow` directly and never called
+`may_work_now`, where the Tautulli check lives, so it did neither. It now runs
+the stream check on the `--now` path and yields to an active stream while still
+ignoring the clock -- the behaviour the help describes. Two tests cover both
+halves. The supervisor never used `--now`, so nothing about the remux run
+changes.
+
+### The "dropping 0 audio track(s)" message, and what it really was
+
+Session 8 guessed attachment or subtitle stripping. It is neither. Decision 115
+(*A Quiet Place*) has **one** audio track and drops nothing -- it re-encodes
+that track from 8-channel EAC3 down to 640k, and `audio_bytes_after` counts
+shrinking a kept track as a saving. The reason string only knew how to talk
+about dropped tracks.
+
+The message now names the work that frees the space: dropping tracks,
+re-encoding the audio, or repacking the container. The other three pending
+remuxes drop one track each and read as they always did.
+
+### Open items for the next session, in order
+
+1. **Ship or park the verification fix.** Uncommitted and undeployed. It needs a
+   commit, the per-file deploy, and a rebuild before the NAS behaves any
+   differently. Nothing forces this today -- the box is idle -- but the encode
+   tier should not start on the old check.
+2. **Then re-run the six.** Their originals are untouched and their decisions
+   are `failed`; `--retry-failed` puts them back. That is ~29.4 GB of scratch
+   reclaimed and six files' savings recovered. **Watch one before deleting
+   originals.**
+3. **Calibrate the movie ladder.** Unchanged and still the real blocker: it
+   needs a fat H.264 BluRay rip at 8-15 Mbps. It blocks every movie encode and
+   the 4 leftover remuxes.
+4. **Settle the Look Back rescan question** -- why that install triggered no
+   *arr rescan when the other two did. Untouched this session.
+5. **Then the encode tier.** 4,628 files, ~6,200 real hours at the measured
+   2.16x. `app calibrate` still needs **7 more encode outcomes**.
+
+### What this session did NOT check
+
+- **The TrueHD 3.1 MB/s hypothesis is still unconfirmed.** Nobody looked at
+  `job.cmd` for a lossless-audio title.
+- **Nothing from the 206-file tier has been watched on a TV**, and neither has
+  any quarantined output.
+- **The worker still exits rather than waits when a stream starts.** The
+  supervisor covers it; nothing was changed.
+
+---
+
 ## Session 8 (2026-09-02): the remux tier finished on its own
 
 Nothing was started, stopped or changed this session. The supervisor launched
@@ -813,6 +967,11 @@ Session 7 noted the log "reads slightly low" -- it is worth more than
 
 ### Six failures now, all one signature
 
+> **Superseded 2026-09-02 by Session 9: these are not failures.** All six are
+> sound remuxes that the structural check refused wrongly, because it compared
+> container durations and a dropped foreign dub overhangs the picture. The
+> table below is accurate; the conclusion drawn from it was not.
+
 Session 7 recorded three. The full tier produced **six**, all refused by the
 structural check with the original left intact:
 
@@ -835,6 +994,11 @@ corruption-length. That points at trailing content the stream copy drops rather
 than at bad sources -- but **nobody has confirmed it**. Six isolated test cases
 are sitting on disk waiting for whoever picks this up. It is the only
 correctness defect the whole tier produced.
+
+> **Answered 2026-09-02.** Credits-length was the right clue and the wrong
+> suspect: a foreign dub keeps playing over the credits, the job drops it, and
+> the output is shorter than the source's *container* by exactly that overhang.
+> The picture matches to within a frame in all six. See Session 9.
 
 A seventh, *Wonka*, went to `skipped` with `file no longer exists on disk` --
 an *arr replaced the source between planning and execution. Working as designed.
@@ -864,6 +1028,11 @@ reads `dropping 0 audio track(s) frees 0.3 GB`. Zero tracks and 0.3 GB is
 contradictory -- probably attachment or subtitle stripping that the reason
 string does not mention.
 
+> **Fixed 2026-09-02, and the guess was wrong.** Not attachments or subtitles:
+> the file has one audio track, drops nothing, and re-encodes 8-channel EAC3
+> down to 640k. Shrinking a kept track counts as a saving; the reason string
+> only knew how to describe dropped ones. See Session 9.
+
 ### The 798 deferred encodes are a fairness cap -- close this question
 
 Every deferred row says `deferred: this title already has 25 file(s) queued`.
@@ -880,6 +1049,7 @@ Stated plainly so it is not mistaken for verified:
   one looked at `job.cmd` for a lossless-audio title. The 2.16x figure makes it
   less urgent but does not answer it.
 - **`--now` is still a trap** -- help text and `worker.py` still disagree.
+  (**Fixed 2026-09-02**, Session 9. The code now runs the stream check.)
 - **The Look Back *arr-rescan question is still open.** Sonarr timed out on
   `/series` repeatedly through this run (Radarr never did), which may be the
   same thing or may be unrelated.
@@ -887,6 +1057,10 @@ Stated plainly so it is not mistaken for verified:
   three files were ever spot-checked.
 
 ### Open items for the next session, in order
+
+> **Superseded 2026-09-02 by Session 9's list.** Item 1 is done, item 2 is
+> diagnosed and fixed in code, item 4's `--now` half is fixed. Items 3 and 5
+> stand.
 
 1. **Restore `safety.max_deletes_per_run` to 50.** Backup at
    `config/config.yaml.bak-cap50`. Do this before the encode tier, not after.
@@ -990,6 +1164,8 @@ Plex at 20:00 ends the night's work permanently, and the log looks like a
 tidy, deliberate stop.
 
 **`--now` bypasses the stream check, and its help text says it does not.**
+(**Fixed 2026-09-02**, Session 9 -- the code was changed to match the help. The
+paragraph below describes the behaviour before that.)
 `work.add_argument("--now", ...)` promises "ignore the schedule window (still
 pauses for streams)", but `worker.py` builds its `WorkWindow` directly when
 `ignore_schedule` is set, never calling `may_work_now`, which is where

@@ -85,14 +85,24 @@ def check_structure(
     if expect_codec and info.v_codec != expect_codec:
         result.fail(f"output video is {info.v_codec}, expected {expect_codec}")
 
-    tolerance = max(DURATION_TOLERANCE_MIN_S, source.duration_s * DURATION_TOLERANCE_PCT)
-    if source.duration_s > 0:
-        if info.duration_s <= 0:
+    # Compare picture with picture, not container with container. A container's
+    # duration is its longest stream, so dropping a foreign dub that runs past
+    # the credits legitimately shortens the output by exactly that overhang --
+    # and the file is perfect. Six sound remuxes were refused as "truncated" for
+    # this in the 2026-09 tier (38-270s of Italian, Russian, German or Polish
+    # audio hanging off the end of a Bluray rip), 2.8% of everything attempted.
+    # Fall back to the container on either side when the picture's own length is
+    # not recorded, which is the older, blunter comparison.
+    reference = source.v_duration_s or source.duration_s
+    measured = info.v_duration_s or info.duration_s
+    tolerance = max(DURATION_TOLERANCE_MIN_S, reference * DURATION_TOLERANCE_PCT)
+    if reference > 0:
+        if measured <= 0:
             result.fail("output duration could not be read")
-        elif abs(info.duration_s - source.duration_s) > tolerance:
+        elif abs(measured - reference) > tolerance:
             result.fail(
-                f"output is {info.duration_s:.1f}s against the source's "
-                f"{source.duration_s:.1f}s -- truncated or wrongly muxed"
+                f"output is {measured:.1f}s against the source's "
+                f"{reference:.1f}s -- truncated or wrongly muxed"
             )
 
     if expect_height and info.v_height and abs(info.v_height - expect_height) > 8:

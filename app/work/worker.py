@@ -517,16 +517,26 @@ def run(
                  f"interrupted run")
 
     while limit is None or stats.attempted < limit:
-        window = (
+        if ignore_schedule:
             # --now is an explicit override of the schedule, so it overrides the
             # night-only rule for software encodes too: you asked for full width.
-            schedule.WorkWindow(
-                True, config.schedule.night_threads, 0, "schedule ignored",
-                is_night=True,
+            #
+            # It does NOT override the stream check, and must not: an encode
+            # started here fights Plex for /dev/dri and the disks, which is the
+            # one thing the whole schedule exists to prevent. The help text has
+            # promised "still pauses for streams" from the start; until this was
+            # fixed the code built its window directly and never asked.
+            paused, reason = schedule.someone_is_watching(config)
+            window = (
+                schedule.WorkWindow(False, 0, 0, reason)
+                if paused
+                else schedule.WorkWindow(
+                    True, config.schedule.night_threads, 0, "schedule ignored",
+                    is_night=True,
+                )
             )
-            if ignore_schedule
-            else schedule.may_work_now(config)
-        )
+        else:
+            window = schedule.may_work_now(config)
         if not window.working:
             stats.stopped_because = window.reason
             break

@@ -171,6 +171,48 @@ class TestActionChoice:
         # Minutes of disk I/O, not hours of encoding.
         assert decision.est_cpu_seconds < 300
 
+    def test_the_remux_reason_names_the_work_that_frees_the_space(
+        self, config, ladder
+    ):
+        """Dropping a track is only one of the ways a remux gets smaller.
+
+        A file with a single fat audio stream has nothing to drop -- the saving
+        comes from re-encoding that stream down to the target bitrate. Saying
+        "dropping 0 audio track(s) frees 0.3 GB" described it as a bug for two
+        sessions running.
+        """
+        f = facts(
+            v_codec="hevc",
+            size_bytes=11 * GB,
+            duration_s=7200.0,
+            audio=[
+                {"codec": "eac3", "channels": 8, "language": "eng",
+                 "bitrate": 1_500_000},
+            ],
+        )
+        decision = plan_one(f, config, ladder)
+        assert decision.action == REMUX
+        assert decision.detail["dropped_tracks"] == 0
+        assert "re-encoding the audio frees" in decision.reason
+        assert "dropping 0 audio track(s)" not in decision.reason
+
+    def test_the_remux_reason_still_counts_dropped_tracks(self, config, ladder):
+        f = facts(
+            v_codec="hevc",
+            size_bytes=8 * GB,
+            duration_s=7200.0,
+            audio=[
+                {"codec": "eac3", "channels": 6, "language": "eng", "bitrate": 640_000},
+                {"codec": "dts", "channels": 6, "language": "fra",
+                 "bitrate": 1_500_000},
+                {"codec": "dts", "channels": 6, "language": "deu",
+                 "bitrate": 1_500_000},
+            ],
+        )
+        decision = plan_one(f, config, ladder)
+        assert decision.action == REMUX
+        assert "dropping 2 audio track(s) frees" in decision.reason
+
     def test_already_lean_source_is_left_alone(self, config, ladder):
         decision = plan_one(facts(v_bitrate=2_000_000, size_bytes=1 * GB), config, ladder)
         assert decision.action == SKIP

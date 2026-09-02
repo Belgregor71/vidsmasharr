@@ -89,6 +89,11 @@ class MediaInfo:
     hdr_type: str
     audio: list[AudioTrack] = field(default_factory=list)
     subs: list[SubtitleTrack] = field(default_factory=list)
+    # How long the picture runs, which is not what duration_s says. A
+    # container's duration is its longest stream, and a foreign dub that keeps
+    # playing over the credits makes that minutes more than the video. Anything
+    # comparing a source with an output that drops tracks needs this one.
+    v_duration_s: float | None = None
 
     @property
     def is_protected_hdr(self) -> bool:
@@ -150,6 +155,45 @@ def _to_float(value: Any) -> float | None:
         return result if result > 0 else None
     except (TypeError, ValueError):
         return None
+
+
+def _parse_timecode(value: Any) -> float | None:
+    """`01:44:59.460000000` -> 6299.46. Passes plain numbers straight through."""
+    if not isinstance(value, str):
+        return _to_float(value)
+    if ":" not in value:
+        return _to_float(value)
+    parts = value.split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        hours, minutes, seconds = (float(p) for p in parts)
+    except ValueError:
+        return None
+    total = hours * 3600 + minutes * 60 + seconds
+    return total if total > 0 else None
+
+
+def _stream_duration(stream: dict) -> float | None:
+    """One stream's own length, in seconds.
+
+    Containers disagree about where to put it. MP4 writes a float in
+    `duration`; Matroska usually leaves that empty and carries an mkvmerge
+    `DURATION` tag instead -- frequently suffixed with a language, as
+    `DURATION-eng`. Reading only the bare tag misses that spelling, and it is
+    the common one on Bluray rips.
+    """
+    direct = _to_float(stream.get("duration"))
+    if direct:
+        return direct
+
+    for key, value in (stream.get("tags") or {}).items():
+        name = str(key).upper()
+        if name == "DURATION" or name.startswith("DURATION-"):
+            parsed = _parse_timecode(value)
+            if parsed:
+                return parsed
+    return None
 
 
 def _parse_fps(rate: str | None) -> float | None:
@@ -329,6 +373,8 @@ def parse_probe_json(path: str, size_bytes: int, data: dict) -> MediaInfo:
             hdr_type="unknown", audio=audio, subs=subs,
         )
 
+    v_duration = _stream_duration(video)
+
     v_bitrate = _to_int(video.get("bit_rate"))
     if v_bitrate is None and total_bitrate:
         # Container-level bitrate minus what we can account for in audio. Rough,
@@ -345,6 +391,7 @@ def parse_probe_json(path: str, size_bytes: int, data: dict) -> MediaInfo:
         size_bytes=size_bytes,
         container=(fmt.get("format_name") or "").split(",")[0],
         duration_s=duration,
+        v_duration_s=v_duration,
         bitrate=total_bitrate,
         v_codec=(video.get("codec_name") or "").lower(),
         v_profile=video.get("profile"),

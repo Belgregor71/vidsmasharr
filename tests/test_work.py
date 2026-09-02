@@ -277,6 +277,57 @@ class TestStructuralChecks:
         assert not result.ok
         assert "truncated" in result.summary
 
+    def test_dropping_a_dub_that_overhangs_the_credits_is_not_truncation(
+        self, tmp_path, monkeypatch
+    ):
+        """The Wicked For Good case, and five others like it.
+
+        The source's container runs to its longest stream -- an Italian dub
+        4.5 minutes past the end of the picture. The remux drops that track, so
+        the output's container ends with the video. Nothing was truncated.
+        """
+        out = self._output(tmp_path)
+        source = fake_info(duration_s=8521.6, v_duration_s=8252.2, size_bytes=12 * GB)
+        monkeypatch.setattr(
+            verify, "probe",
+            lambda p, f: fake_info(
+                v_codec="hevc", duration_s=8252.3, v_duration_s=8252.2,
+                size_bytes=8 * GB,
+            ),
+        )
+        result = verify.check_structure(source, out, ffprobe="ffprobe")
+        assert result.ok, result.summary
+
+    def test_a_truncated_picture_is_still_caught_when_a_dub_overhangs(
+        self, tmp_path, monkeypatch
+    ):
+        """The half of that comparison that must keep failing."""
+        out = self._output(tmp_path)
+        source = fake_info(duration_s=8521.6, v_duration_s=8252.2, size_bytes=12 * GB)
+        monkeypatch.setattr(
+            verify, "probe",
+            lambda p, f: fake_info(
+                v_codec="hevc", duration_s=7000.0, v_duration_s=7000.0,
+                size_bytes=8 * GB,
+            ),
+        )
+        result = verify.check_structure(source, out, ffprobe="ffprobe")
+        assert not result.ok
+        assert "truncated" in result.summary
+
+    def test_duration_falls_back_to_the_container_when_the_picture_is_unmeasured(
+        self, tmp_path, monkeypatch
+    ):
+        """Sources without per-stream durations get the old, blunter check."""
+        out = self._output(tmp_path)
+        monkeypatch.setattr(
+            verify, "probe",
+            lambda p, f: fake_info(v_codec="hevc", duration_s=800.0, size_bytes=1 * GB),
+        )
+        result = verify.check_structure(fake_info(), out, ffprobe="ffprobe")
+        assert not result.ok
+        assert "truncated" in result.summary
+
     def test_losing_the_audio_is_caught(self, tmp_path, monkeypatch):
         out = self._output(tmp_path)
         monkeypatch.setattr(
@@ -600,6 +651,37 @@ class TestRecovery:
         assert worker.reclaim_stale(db) == 1
         assert db.scalar("SELECT state FROM decision") == "pending"
         assert db.scalar("SELECT state FROM job") == "interrupted"
+
+
+class TestNowStillYieldsToStreams:
+    """`--now` says "still pauses for streams" in its help. It has to mean it.
+
+    The flag overrides the *schedule window*, so a run can be started at noon.
+    It does not override the stream check: the box has one video engine, and an
+    encode started while someone is watching fights Plex for it -- the single
+    thing the schedule exists to prevent.
+    """
+
+    def test_now_yields_to_an_active_stream(self, db, config, tmp_path, monkeypatch):
+        seed_job(db, tmp_path)
+        monkeypatch.setattr(worker, "probe", lambda p, f: fake_info())
+        monkeypatch.setattr(schedule, "tautulli_streams", lambda c: 1)
+
+        stats = worker.run(db, config, ignore_schedule=True, progress=None)
+
+        assert stats.attempted == 0
+        assert "1 active stream" in stats.stopped_because
+
+    def test_now_runs_at_any_hour_when_nobody_is_watching(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        seed_job(db, tmp_path)
+        monkeypatch.setattr(worker, "probe", lambda p, f: fake_info())
+        monkeypatch.setattr(schedule, "tautulli_streams", lambda c: 0)
+
+        stats = worker.run(db, config, ignore_schedule=True, progress=None)
+
+        assert stats.attempted == 1
 
 
 class TestDryRun:
