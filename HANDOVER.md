@@ -13,18 +13,20 @@ correctness defect the tier produced turned out not to be a defect.** The box
 is idle -- no container running, no supervisor process, nothing to start or
 stop.
 
-**The one thing to know before you touch anything: the workstation and the NAS
-are no longer running the same code.** Session 9 fixed three things in `app/`
-and they are **committed nowhere and deployed nowhere**. The NAS image still
-verifies the old way. Nothing is broken by that -- the box is idle -- but
-re-running a quarantined file on the NAS today will fail exactly as it did
-before, and the reason will be the stale image, not the file.
+Session 9's verification fix is **committed, pushed and deployed**. `main` is
+at `7fc9d85`, the four changed files are byte-identical on the NAS and inside
+the rebuilt image, and the container was asked to re-judge all six quarantined
+pairs using its own code: **6/6 verify**.
 
-**Do this first, before anything else: decide whether to ship Session 9's
-fix.** It is written, it has tests, and it has been replayed against the real
-ffprobe output of all six quarantined pairs. It is not deployed. Shipping it
-means a commit, a `curl` of the changed files onto the NAS and a rebuild --
-the pattern is below under "How code actually got deployed".
+**Do this first, before anything else: re-run the six.** Their originals are
+untouched, their decisions are `failed`, and `app work --retry-failed` puts
+them back in the queue. That is ~29.4 GB of scratch handed back and six files'
+savings recovered. `dry_run` is still `true` and the ceiling is 50, so a
+`--execute` run is what actually installs and deletes.
+
+**Watch one of them on a TV before the originals go.** The check now proves the
+picture is the right length and the audio is the track that was asked for. It
+does not prove the file looks right.
 
 **To confirm the state in one command:**
 
@@ -39,9 +41,9 @@ Session 8 before touching anything.
 
 | | where it stands |
 |---|---|
-| Code | Phases 0-4 built, **356 tests**, `main` still at `485c74c`. `ladder-robust` is merged and deleted -- everything it carried is on `main`, which is the only branch on the remote. **Session 9's changes to `probe.py`, `verify.py`, `worker.py` and `rules.py` are uncommitted and undeployed** |
-| Working tree | **7 files really are modified** (Session 9: `probe.py`, `verify.py`, `worker.py`, `rules.py`, three test files) **on top of a permanent `git status` lie.** 19 files show as ` M` forever: `core.autocrlf=true` fights `.gitattributes eol=lf`, so the index stat data never settles. Those 19 have empty `git diff --numstat` and nothing uncommitted in them -- do not "fix" them by committing. `git diff --stat` separates the real from the phantom; run `git config core.autocrlf false` if the noise matters |
-| NAS repo | **NOT a git checkout -- `git` is not on PATH.** But md5-swept 2026-08-31: tree *and* image are `485c74c` throughout, bar 4 inert test files. See below |
+| Code | Phases 0-4 built, **356 tests**, **`main` at `7fc9d85`** and pushed. `ladder-robust` is merged and deleted -- `main` is the only branch on the remote |
+| Working tree | **clean, bar a permanent `git status` lie.** 19 files show as ` M` forever: `core.autocrlf=true` fights `.gitattributes eol=lf`, so the index stat data never settles. Their `git diff --numstat` is empty and there is nothing uncommitted in them. Do not "fix" them by committing -- `git diff --stat` separates real from phantom, and `git config core.autocrlf false` silences it |
+| NAS repo | **NOT a git checkout -- `git` is not on PATH.** md5-swept 2026-08-31 at `485c74c`; on 2026-09-02 four files were replaced with the `7fc9d85` versions by checksum-verified download and the image rebuilt. Tree and image agree. See below |
 | TV ladder | **written to `profiles.yaml` 2026-08-29.** The live file says `preferred_encoder: hevc_qsv`, tv/1080p at `global_quality 21`, `target_vmaf 92`, expected ratio 0.3576 |
 | Movie ladder | **absent, deliberately** -- no valid movie calibration exists yet. This now blocks real queued work, not just theory: see Session 8 |
 | Direct play | **VERIFIED 2026-08-30 -- Direct Play on both TVs.** No longer a blocker |
@@ -51,12 +53,12 @@ Session 8 before touching anything.
 | Phase 1 on the real library | **DONE 2026-08-30.** 23,287 files, 23,078 probed, 9 unprobeable, all resolved |
 | Duplicates | **238 group(s), 684 files, 166 GB reclaimable.** 150 need a human decision. Untouched |
 | **Remux tier** | **COMPLETE 2026-09-02 16:33.** 206 outcomes, **436.0 GB reclaimed**, 6 quarantined, 4 left pending behind encodes. Supervisor exited cleanly at pass 31 |
-| The 6 quarantined | **DIAGNOSED 2026-09-02, and they are not broken.** All six are sound remuxes that verification refused wrongly. Fixed in code, not yet deployed. ~29.4 GB of scratch to reclaim and ~6 files to re-run once it is. See Session 9 |
+| The 6 quarantined | **DIAGNOSED AND FIXED 2026-09-02, and they were never broken.** All six are sound remuxes that verification refused wrongly. The fix is deployed and the container now verifies **6/6**. Still to do: re-run them with `--retry-failed --execute`, ~29.4 GB of scratch back. See Session 9 |
 | Estimator | Savings **0.995x** over the full tier -- essentially exact. CPU **2.16x**, and the ratio *eased* as the sample grew. See Session 8 |
 | Encode tier | **NOT STARTED.** 4,628 pending (4,973.9 GB, 2,854.9 h est), 798 deferred, 4 downscale |
 | Outcomes recorded | **207 -- but still only 1 is an encode.** `app calibrate` needs 8 *per model*; 206 are `stream-copy` remuxes with no encoder and no VMAF. **Seven more encodes**, not seven more files |
 | Playback on TV | **PASSED 2026-08-31** on the first three files. Nothing from the 206-file tier has been spot-checked on a TV |
-| Next action | **Ship or park Session 9's verification fix.** Then the movie ladder, then the encode tier |
+| Next action | **Re-run the six with `--retry-failed`**, watching one on a TV first. Then the movie ladder, then the encode tier |
 | Media library | **REWRITTEN IN PLACE.** 206 files replaced, originals deleted, 440.5 GB reclaimed in total. `delete_original_on_success` **true**, `max_deletes_per_run` **restored to 50 on 2026-09-02** |
 | Disk | **4.2 TB free, 86% used.** The whole remux tier moved this under 2% -- the space is in the encode tier |
 
@@ -846,6 +848,42 @@ now says the picture is the right length and the audio is the track that was
 asked for; it does not say the file looks right on a TV. Watch one before the
 originals go.
 
+### Shipped the same session, and confirmed on the box
+
+Committed as `7fc9d85` and pushed; `main` is the only branch on the remote and
+the deploy reads raw `main`, so it had to land there.
+
+The NAS deploy could not use the `sudo cp` / `sudo curl` pattern written down
+in this file. Sudo here is scoped to `/usr/local/bin/docker` and nothing else,
+and `app/` is `root:root` with group `root`, so `BrettGreg` cannot write into
+it. The four files were fetched and installed **through a container** instead,
+with the repo bind-mounted read-write:
+
+- each file downloaded to `/tmp` first and **checked against its md5 before
+  anything was overwritten**, so a truncated download could not land;
+- the live copies backed up to `/scratch/pre-session9-bak/` first;
+- installed with `cat >` rather than `mv`, so root ownership and mode survive.
+
+Then `docker compose build`. Only the two `COPY` layers re-ran, as this file
+predicts -- about 15 seconds.
+
+**Confirmed rather than assumed**, since nothing warns you when a container is
+running stale code. The md5s inside the image match the committed files, and
+the container was pointed at all six quarantined pairs and asked to judge them
+with its own `probe` and `check_structure`:
+
+```
+PASS  A Big Bold Beautiful Journey (2025)   src_pic=6556.9   verified
+PASS  Asteroid City (2023)                  src_pic=6299.5   verified
+PASS  Megalopolis (2024)                    src_pic=8284.0   verified
+PASS  Obsession (2026)                      src_pic=6519.8   verified
+PASS  The Bad Guys 2 (2025)                 src_pic=6226.2   verified
+PASS  Wicked For Good (2025)                src_pic=8252.2   verified
+```
+
+`worker`, `rules` and `cli` import cleanly in the image, and `app work --help`
+now describes a `--now` that tells the truth.
+
 ### `--now` no longer fights Plex
 
 Its help has always said "ignore the schedule window (still pauses for
@@ -870,14 +908,15 @@ remuxes drop one track each and read as they always did.
 
 ### Open items for the next session, in order
 
-1. **Ship or park the verification fix.** Uncommitted and undeployed. It needs a
-   commit, the per-file deploy, and a rebuild before the NAS behaves any
-   differently. Nothing forces this today -- the box is idle -- but the encode
-   tier should not start on the old check.
-2. **Then re-run the six.** Their originals are untouched and their decisions
-   are `failed`; `--retry-failed` puts them back. That is ~29.4 GB of scratch
-   reclaimed and six files' savings recovered. **Watch one before deleting
-   originals.**
+1. **Re-run the six.** Their originals are untouched and their decisions are
+   `failed`; `app work --retry-failed --execute` puts them back and installs
+   them. That is ~29.4 GB of scratch reclaimed and six files' savings
+   recovered. **Watch one before deleting originals** -- the fix proves the
+   picture is the right length, not that it looks right. The stale outputs
+   already in `/scratch/vidsmasharr/quarantine/` are from the old run; let the
+   re-run produce fresh ones rather than installing those by hand.
+2. **Delete `/scratch/pre-session9-bak/` once the re-run has been seen to
+   work.** It holds the pre-deploy copies of the four changed files.
 3. **Calibrate the movie ladder.** Unchanged and still the real blocker: it
    needs a fat H.264 BluRay rip at 8-15 Mbps. It blocks every movie encode and
    the 4 leftover remuxes.
