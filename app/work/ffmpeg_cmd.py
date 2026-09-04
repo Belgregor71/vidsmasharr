@@ -187,12 +187,23 @@ def build_vmaf_command(
     reference_height: int | None = None,
     start_s: float | None = None,
     duration_s: float | None = None,
+    fps: str | float | None = None,
 ) -> list[str]:
     """Score `distorted` against `reference`.
 
     When the encode downscaled, the distorted stream is scaled back up to the
     reference resolution before comparison. That is the meaningful question for
     us: how does the smaller file look on a TV that will upscale it anyway.
+
+    `fps` forces both legs to one frame rate before they meet libvmaf, and
+    must be passed whenever a real score matters. Matroska stores timestamps in
+    milliseconds, so 1/23.976s is written as the repeating pattern 42, 42, 41 --
+    and an encode re-derives that phase independently of its source. The two
+    drift apart, libvmaf's framesync pairs the wrong frames roughly three times
+    in every twenty-four, and those frames score near zero however good the
+    encode is. Measured on one movie clip: mean 90.6 with min 0.0 unforced,
+    against mean 98.2 with min 93.4 forced. Every number this project produced
+    before 2026-09-05 is understated for that reason.
 
     `start_s` and `duration_s` score one segment instead of the whole file,
     which is how verification works in production: three 20-second samples of a
@@ -203,14 +214,15 @@ def build_vmaf_command(
     scale = ""
     if reference_height:
         scale = f"scale=-2:{reference_height}:flags=bicubic,"
+    rate = f"fps={fps}," if fps else ""
 
     # log_path goes through two levels of parsing (filtergraph, then filter
     # args), so any directory separator or drive colon in it is a minefield.
     # Pass a bare filename and run ffmpeg with cwd set to the log's directory
     # instead -- that works identically on Linux and Windows.
     graph = (
-        f"[0:v]{scale}setpts=PTS-STARTPTS,format=yuv420p[dist];"
-        f"[1:v]setpts=PTS-STARTPTS,format=yuv420p[ref];"
+        f"[0:v]{scale}{rate}setpts=PTS-STARTPTS,format=yuv420p[dist];"
+        f"[1:v]{rate}setpts=PTS-STARTPTS,format=yuv420p[ref];"
         f"[dist][ref]libvmaf=log_fmt=json:log_path={_escape_filter_path(log_path)}"
         f":n_threads={threads}"
     )

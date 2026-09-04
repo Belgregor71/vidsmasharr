@@ -169,6 +169,10 @@ def check_quality(
             threads=threads,
             start_s=offset,
             duration_s=float(config.quality.vmaf_sample_seconds),
+            # Both legs on one cadence, or framesync mispairs ~3 frames in 24
+            # and the samples come back tens of points low. See
+            # build_vmaf_command.
+            fps=source.v_fps,
         )
         if not score.ok:
             # Could not measure means could not verify. Never a pass.

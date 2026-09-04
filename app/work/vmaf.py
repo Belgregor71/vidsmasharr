@@ -43,6 +43,7 @@ def score(
     timeout: int = 3600,
     start_s: float | None = None,
     duration_s: float | None = None,
+    fps: str | float | None = None,
 ) -> VmafScore:
     """Score one file, or one segment of it, against its reference."""
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -54,7 +55,7 @@ def score(
     cmd = build_vmaf_command(
         ffmpeg=ffmpeg, distorted=distorted.resolve(), reference=reference.resolve(),
         log_path=log_name, threads=threads, reference_height=reference_height,
-        start_s=start_s, duration_s=duration_s,
+        start_s=start_s, duration_s=duration_s, fps=fps,
     )
 
     try:

@@ -132,3 +132,39 @@ def test_vmaf_omits_scaling_when_resolution_is_unchanged():
     )
     graph = cmd[cmd.index("-lavfi") + 1]
     assert "scale=" not in graph
+
+
+def test_vmaf_forces_one_frame_rate_on_both_legs():
+    # Matroska rounds timestamps to milliseconds, so 1/23.976s alternates
+    # 42, 42, 41 -- and an encode re-derives that phase independently of its
+    # source. Without a common cadence libvmaf's framesync pairs the wrong
+    # frames about three times in twenty-four, and those score near zero
+    # however good the encode is. Measured: mean 90.6 / min 0.0 unforced
+    # against mean 98.2 / min 93.4 forced, on the same file.
+    cmd = build_vmaf_command(
+        ffmpeg="ffmpeg", distorted="/s/out.mkv", reference="/s/ref.mkv",
+        log_path="v.json", fps=23.976023976023978,
+    )
+    graph = cmd[cmd.index("-lavfi") + 1]
+    dist, ref = graph.split(";")[0], graph.split(";")[1]
+    assert "fps=23.976023976023978," in dist
+    assert "fps=23.976023976023978," in ref
+
+
+def test_vmaf_omits_the_frame_rate_filter_when_none_is_known():
+    cmd = build_vmaf_command(
+        ffmpeg="ffmpeg", distorted="/s/out.mkv", reference="/s/ref.mkv",
+        log_path="v.json",
+    )
+    assert "fps=" not in cmd[cmd.index("-lavfi") + 1]
+
+
+def test_vmaf_scales_the_distorted_side_before_forcing_the_rate():
+    # Order matters: scale is a distorted-only concern, the rate applies to
+    # both, and format must be last so libvmaf sees a plain planar frame.
+    cmd = build_vmaf_command(
+        ffmpeg="ffmpeg", distorted="/s/out.mkv", reference="/s/ref.mkv",
+        log_path="v.json", reference_height=1080, fps="24000/1001",
+    )
+    dist = cmd[cmd.index("-lavfi") + 1].split(";")[0]
+    assert dist.index("scale=") < dist.index("fps=") < dist.index("format=")

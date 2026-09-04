@@ -187,6 +187,7 @@ def extract_clips(
 def score_vmaf(
     distorted: Path, reference: Path, *, ffmpeg: str, work_dir: Path,
     reference_height: int | None = None, threads: int = 2, timeout: int = 3600,
+    fps: str | float | None = None,
 ) -> tuple[float | None, float | None, float | None, str | None]:
     """Whole-file score, as a plain tuple. See app/work/vmaf.py for the work.
 
@@ -197,6 +198,7 @@ def score_vmaf(
     result = vmaf.score(
         distorted, reference, ffmpeg=ffmpeg, work_dir=work_dir,
         reference_height=reference_height, threads=threads, timeout=timeout,
+        fps=fps,
     )
     return result.mean, result.min, result.p1, result.error
 
@@ -257,6 +259,7 @@ def measure(
         mean, minimum, p1, error = score_vmaf(
             dest, clip.path, ffmpeg=ffmpeg_vmaf or ffmpeg, work_dir=work_dir,
             reference_height=clip.info.v_height if target_height else None,
+            fps=clip.info.v_fps,
         )
         measurement.vmaf_mean, measurement.vmaf_min, measurement.vmaf_p1 = mean, minimum, p1
         if error:
