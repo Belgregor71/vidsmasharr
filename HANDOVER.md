@@ -1,4 +1,4 @@
-# Handover — sessions 1–9 (2026-08-27 → 09-02)
+# Handover — sessions 1–10 (2026-08-27 → 09-03)
 
 Read this first. It records what is *verified* on the real hardware versus what
 is still assumed, so tomorrow doesn't re-litigate settled decisions or trust
@@ -8,34 +8,39 @@ unverified ones.
 
 ## NEXT SESSION: start here
 
-**The remux tier is finished, the delete ceiling is back to 50, and the only
-correctness defect the tier produced turned out not to be a defect.** The box
-is idle -- no container running, no supervisor process, nothing to start or
-stop.
+**The remux tier is finished and fully closed out. There are no failed or held
+decisions left, and nothing is half-done.** The box is idle -- no container
+running, no supervisor process, nothing to start or stop.
 
-Session 9's verification fix is **committed, pushed and deployed**. `main` is
-at `7fc9d85`, the four changed files are byte-identical on the NAS and inside
-the rebuilt image, and the container was asked to re-judge all six quarantined
-pairs using its own code: **6/6 verify**.
+Session 10 re-ran the six quarantined remuxes end to end: **6/6 verified, two
+of them watched on a TV, all six installed, originals deleted, 62.98 GB of
+stale scratch swept.** The remux tier is now genuinely complete at **212 files
+and 447 GB**.
 
-**Do this first, before anything else: re-run the six.** Their originals are
-untouched, their decisions are `failed`, and `app work --retry-failed` puts
-them back in the queue. That is ~29.4 GB of scratch handed back and six files'
-savings recovered. `dry_run` is still `true` and the ceiling is 50, so a
-`--execute` run is what actually installs and deletes.
+**A movie ladder calibration is parked on the NAS, waiting for 21:00 on
+2026-09-04.** Sources were hand-picked this time rather than sampled -- which
+is why both previous attempts were invalid -- and the sweep reaches below the
+old qp floor of 20. **Read `~/bench-movies.log` first.** Session 10 has the
+full brief and the three-step finish, including the combine command that keeps
+the TV rungs.
 
-**Watch one of them on a TV before the originals go.** The check now proves the
-picture is the right length and the audio is the track that was asked for. It
-does not prove the file looks right.
+**Do not skip the `preferred_encoder` finding in Session 10.** The live ladder
+prefers `hevc_qsv`, which is ~30% slower than `hevc_vaapi` and never reached
+VMAF 95; it was chosen by counting rungs, not by measuring anything. That needs
+a deliberate decision before the encode tier starts.
+
+Note the second, quieter blocker: **outcomes are at 213 but still only 1 is an
+encode.** `app calibrate` needs 8 *per model*. That is **seven more encodes**,
+not seven more files -- 212 stream-copy remuxes contribute nothing to it.
 
 **To confirm the state in one command:**
 
 ```sh
-ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179 'tail -3 ~/remux-211.log'
+ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179   'sudo -n /usr/local/bin/docker compose -f /volume1/docker/vidsmasharr/docker/docker-compose.yml run --rm vidsmasharr app status'
 ```
 
-It should end with `DONE` and `supervisor finished`. If it does not, read
-Session 8 before touching anything.
+It should report 23,287 files and **213 outcomes**. If it does not, read
+Session 10 before touching anything.
 
 ### State at a glance (2026-09-02 17:40)
 
@@ -45,22 +50,22 @@ Session 8 before touching anything.
 | Working tree | **clean, bar a permanent `git status` lie.** 19 files show as ` M` forever: `core.autocrlf=true` fights `.gitattributes eol=lf`, so the index stat data never settles. Their `git diff --numstat` is empty and there is nothing uncommitted in them. Do not "fix" them by committing -- `git diff --stat` separates real from phantom, and `git config core.autocrlf false` silences it |
 | NAS repo | **NOT a git checkout -- `git` is not on PATH.** md5-swept 2026-08-31 at `485c74c`; on 2026-09-02 four files were replaced with the `7fc9d85` versions by checksum-verified download and the image rebuilt. Tree and image agree. See below |
 | TV ladder | **written to `profiles.yaml` 2026-08-29.** The live file says `preferred_encoder: hevc_qsv`, tv/1080p at `global_quality 21`, `target_vmaf 92`, expected ratio 0.3576 |
-| Movie ladder | **absent, deliberately** -- no valid movie calibration exists yet. This now blocks real queued work, not just theory: see Session 8 |
+| Movie ladder | **calibration scheduled 2026-09-04 21:00** (the 09-03 attempt aborted on a guard bug, clips were always fine). First run with valid hand-picked sources. Still absent until it lands and is combined. See Session 10 |
 | Direct play | **VERIFIED 2026-08-30 -- Direct Play on both TVs.** No longer a blocker |
 | *arr guard | **APPLIED 2026-08-30** with `--neutralise`; second pass says "nothing to write" |
 | NAS `config.yaml` | **complete 2026-08-30.** Plex token, Tautulli key, both *arr keys, correct `path_map`. No FILL MEs left |
 | NAS access | **SSH + passwordless `docker` from the workstation**, see below |
 | Phase 1 on the real library | **DONE 2026-08-30.** 23,287 files, 23,078 probed, 9 unprobeable, all resolved |
 | Duplicates | **238 group(s), 684 files, 166 GB reclaimable.** 150 need a human decision. Untouched |
-| **Remux tier** | **COMPLETE 2026-09-02 16:33.** 206 outcomes, **436.0 GB reclaimed**, 6 quarantined, 4 left pending behind encodes. Supervisor exited cleanly at pass 31 |
-| The 6 quarantined | **DIAGNOSED AND FIXED 2026-09-02, and they were never broken.** All six are sound remuxes that verification refused wrongly. The fix is deployed and the container now verifies **6/6**. Still to do: re-run them with `--retry-failed --execute`, ~29.4 GB of scratch back. See Session 9 |
-| Estimator | Savings **0.995x** over the full tier -- essentially exact. CPU **2.16x**, and the ratio *eased* as the sample grew. See Session 8 |
+| **Remux tier** | **COMPLETE AND CLOSED 2026-09-03.** 212 outcomes, **447 GB reclaimed**, 0 quarantined, 0 failed, 4 left pending behind encodes (blocked on the movie ladder) |
+| The 6 quarantined | **RESOLVED AND INSTALLED 2026-09-03.** Re-run produced outputs byte-size-identical to the first run's, all six -- proof the files were never broken and only the verifier was. 10.48 GiB reclaimed, originals deleted, Radarr rescanned all six. See Session 10 |
+| Estimator | Savings **0.995x** over the full tier -- essentially exact. CPU **2.16x** overnight, but **1.12x** on an idle box: the multiplier is mostly contention, not the files. See Session 10 |
 | Encode tier | **NOT STARTED.** 4,628 pending (4,973.9 GB, 2,854.9 h est), 798 deferred, 4 downscale |
-| Outcomes recorded | **207 -- but still only 1 is an encode.** `app calibrate` needs 8 *per model*; 206 are `stream-copy` remuxes with no encoder and no VMAF. **Seven more encodes**, not seven more files |
-| Playback on TV | **PASSED 2026-08-31** on the first three files. Nothing from the 206-file tier has been spot-checked on a TV |
-| Next action | **Re-run the six with `--retry-failed`**, watching one on a TV first. Then the movie ladder, then the encode tier |
-| Media library | **REWRITTEN IN PLACE.** 206 files replaced, originals deleted, 440.5 GB reclaimed in total. `delete_original_on_success` **true**, `max_deletes_per_run` **restored to 50 on 2026-09-02** |
-| Disk | **4.2 TB free, 86% used.** The whole remux tier moved this under 2% -- the space is in the encode tier |
+| Outcomes recorded | **213 -- but still only 1 is an encode.** `app calibrate` needs 8 *per model*; 212 are `stream-copy` remuxes with no encoder and no VMAF. **Seven more encodes**, not seven more files |
+| Playback on TV | **PASSED 2026-08-31** on the first three files, and **PASSED 2026-09-03** on two of the six re-runs (Wicked For Good, A Big Bold Beautiful Journey) -- the ending and the DTS-HD MA downmix, the two things at risk. See Session 10 for the trick that gets a scratch file onto a TV |
+| Next action | **Calibrate the movie ladder.** Then seven more encode outcomes, then the encode tier |
+| Media library | **REWRITTEN IN PLACE.** 212 files replaced, originals deleted, 451.8 GB reclaimed in total. `delete_original_on_success` **true**, `max_deletes_per_run` **50** |
+| Disk | **4.2 TB free (`df`), 86% used.** The whole remux tier moved this under 2% -- the space is in the encode tier |
 
 ---
 
@@ -748,6 +753,221 @@ never before. Re-run `app plan` afterwards -- the queue order is the point.
 - **A size ratio is only comparable within one rung.** Under `--robust` two
   encoders can survive different clips, so the printed ratios are averages over
   different populations. That is what the clips column is for.
+
+---
+
+## Session 10 (2026-09-03): the six came back, and the estimator was never the problem
+
+The six quarantined remuxes are re-run, watched, installed and swept. The remux
+tier is closed. Three things worth keeping from it.
+
+### The re-run reproduced the first run byte for byte
+
+Every one of the six new outputs is **exactly the same size as the output the
+original run produced**, which had been sitting in `/scratch/quarantine` since
+2026-08-31:
+
+| file | first run | re-run |
+|---|---|---|
+| A Big Bold Beautiful Journey (2025) | 10,232,484,914 | 10,232,484,914 |
+| Asteroid City (2023) | 13,624,266,346 | 13,624,266,346 |
+| Megalopolis (2024) | 10,239,828,646 | 10,239,828,646 |
+| Obsession (2026) | 7,553,612,532 | 7,553,612,532 |
+| The Bad Guys 2 (2025) | 8,923,783,461 | 8,923,783,461 |
+| Wicked For Good (2025) | 12,408,246,717 | 12,408,246,717 |
+
+Six for six. The remux is deterministic, and this is the third independent
+line of evidence that **the files were never broken and only the verifier
+was** -- after Session 9's replayed ffprobe JSON and the container's own
+re-judgement. Plex later agreed too: it reports 109.3 min and 137.5 min for the
+two watched files, matching the *picture* lengths of 6556.9 s and 8252.2 s
+rather than the containers' inflated 6643.2 s and 8521.6 s.
+
+### The 2.16x CPU multiplier is contention, not the files
+
+The six ran in **0.37 h against 0.33 h estimated -- 1.12x**. Session 8's note
+predicted 5-6x for exactly this shape of file (big Bluray rips, DTS-HD MA / DTS
+/ EAC3 5.1), and the tier as a whole measured 2.16x. Same files, same commands,
+same box.
+
+What differed is *how* they ran: this time on an idle box in daylight, through
+`--now` at full night threads, in one unbroken pass. The tier ran overnight at
+`cpu_shares 512` against Plex, across 30 supervisor passes of which 25 exited
+early on a stream.
+
+**So treat ~2.2x as the price of sharing the box, not as a property of the
+work.** That matters for the encode tier: how much of its ~2,855 h estimate
+becomes ~6,200 h depends mostly on how much of it runs uncontended. This is
+n=6 on stream copies, so do not rewrite the projection on it yet -- but check
+it again on the first real encodes.
+
+Savings came in at **0.90x** of estimate (10.49 GiB against 11.64 GiB), noticeably
+worse than the tier's 0.995x. The whole miss is A Big Bold Beautiful Journey:
+3.38 GiB against 4.60 GiB expected. It is the only DTS-HD MA source in the six,
+and the model over-credits what collapsing lossless audio to 640k EAC3 buys.
+
+### How to get a scratch file onto a TV
+
+Held outputs live in `/volume1/scratch/vidsmasharr/encoding`, which Plex does
+not index and which is root-only. The way through:
+
+**`/volume1/data/media/youtube/video` is Plex library section 7, "Music
+Videos", type 1 (movie).** It is *not* Sonarr- or Radarr-managed, so a file
+dropped there carries no *arr risk at all. Copy in, refresh section 7 through
+the API with the token from `config.yaml`, watch, delete, refresh again.
+
+```sh
+# inside a container with /media mounted rw and --network host
+curl -X PUT "http://192.168.0.179:32400/library/sections/7/refresh?X-Plex-Token=$TOKEN"
+```
+
+Plex files them under their raw filenames, which is ugly and completely fine
+for a spot check.
+
+### The trial flow worked exactly as designed
+
+`delete_original_on_success` went to **false**, the six ran to `held` with the
+library untouched, two were watched, the flag went back to **true**, and
+`app work --install-held` installed all six without re-encoding. Both edits
+were made with `open(p, "w")` on the same inode -- never `sed -i`, never a
+rename -- so root ownership and the Synology ACL survived; the inode was
+asserted unchanged both times, and the restored file was checked byte-identical
+to `config/config.yaml.bak-before-held-run`. The value was read back through
+`load_config()` rather than trusted from the file, both times.
+
+**Radarr rescanned all six and every one came back `completed`** -- worth
+noting against the still-open Look Back question from Session 7.
+
+### Swept, and what was deliberately kept
+
+62.98 GB freed. Each quarantine file was size-checked against its now-installed
+library counterpart and only deleted on a match:
+
+- `/scratch/quarantine` -- 6 outputs + 6 sidecars, **gone**, directory removed.
+  The handover's "~29.4 GB" was wrong: it held 58.7 GiB.
+- `/scratch/pre-session9-bak` -- **gone** (63.6 KB). Session 9's item 2, closed.
+  Those file versions are in git at `7fc9d85` regardless.
+- `/scratch/vidsmasharr.db.pre-first-encode.bak` (43.4 MB) -- **kept** on
+  purpose, as a rollback point until the encode tier is properly under way.
+- `/scratch/plexdb` (702.7 MB) -- **kept**; harmless, and re-copied on demand.
+
+Scratch free is now 4,562 GB.
+
+### The movie ladder run is scheduled, not finished
+
+**A calibration run is parked on the NAS waiting for 21:00 on 2026-09-04.**
+`~/run-movie-bench.sh`, launched under `setsid` so it survives the ssh session,
+logging to `~/bench-movies.log`. Check it first thing:
+
+> **The 2026-09-03 attempt aborted at 21:00 and the clips were fine.** The
+> script's own guard did `ls /volume1/scratch/.../clips | wc -l` *as the login
+> user*, who cannot even list root-owned scratch; `ls` printed "Permission
+> denied", `wc -l` turned that into `0`, and the guard refused to start. Every
+> check in the script now runs through a container, and a non-numeric count is
+> reported rather than coerced. **The general rule: on this box a plain shell
+> read of `/volume1/scratch` fails silently when piped into a counter.** The
+> known write-side version of this trap is in "Driving the NAS" above; this is
+> the read-side one.
+
+```sh
+ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179 'tail -30 ~/bench-movies.log'
+```
+
+It should end with `bench exited rc=0` and `DONE`. If the log stops at
+`waiting for 21:00`, the box rebooted; just re-run the script.
+
+**The sources were chosen by hand, which is the whole point.** Both previous
+movie calibrations failed because the random sampler picked content the policy
+would never queue. These were picked from the DB as fat H.264 1080p SDR Bluray
+rips in the 8-15 Mbps band -- 73 files qualify, 45 of them Bluray -- and
+deliberately spread across difficulty:
+
+| source | v_bitrate | why |
+|---|---|---|
+| Se7en (1995) Remastered | 14.1 Mbps | heavy film grain, very dark -- the hard case |
+| Sinners (2025) | 13.5 Mbps | modern digital live action -- the middle |
+| Mufasa The Lion King (2024) | 12.5 Mbps | CGI animation, smooth gradients -- the easy case |
+
+Six clips (2 per source, 30 s each), all passing `calibration_reject_reason`,
+at 10.1-17.5 Mbps. They are kept in `/scratch/bench-movies/clips` (`--keep-clips`)
+so the sweep can be re-run without re-cutting them.
+
+The sweep is **`--qp-sweep 16 18 20 22 24`**. The old floor of 20 is exactly
+what pinned every movie rung last time, so this reaches below it. 60 encodes:
+6 clips x 2 hardware encoders x 5 quality points.
+
+**It writes nowhere near the live ladder.** `--profiles-out` points at
+`/scratch/bench-movies/profiles.movie-only.yaml`, because `bench` writes
+profiles.yaml from *its own run only* and a movies-only run would delete the
+six TV rungs. There is also a backup at
+`config/profiles.yaml.bak-before-movie-ladder`.
+
+**To finish the job once the run is done:**
+
+1. Read `/scratch/bench-movies/profiles.movie-only.yaml`. The question that
+   matters is whether any movie rung reached VMAF 95, or whether the notes say
+   `set aside as unreachable` again. If they do, the answer to the standing
+   "is VMAF 95 reachable for movies on this hardware?" question is **no**, and
+   the decision to take is lowering `quality.movie_vmaf` -- which is now a
+   decision worth taking, because the sources were finally valid.
+2. Combine, do not replace:
+   ```sh
+   bench.ladder --run-id <NEW> 9ece8030435f 02fab81caf6b --robust
+   ```
+   `--robust` matches how the live ladder was built. With no `--out` it writes
+   the live `config/profiles.yaml`.
+3. `app plan` to requeue. The 4 leftover remuxes should turn into real encode
+   decisions rather than audio-only ones.
+
+### `preferred_encoder` is picked by rung count, not by quality
+
+Worth knowing before trusting the combined ladder. `bench/ladder.py` chooses it
+as:
+
+```python
+preferred = max(set(hardware), key=hardware.count)
+```
+
+That is *the most common hardware encoder among the ladder entries*, which has
+nothing to do with which encoder is better. The two TV runs produced 3 rungs
+each for `hevc_qsv` and `hevc_vaapi`, a 3-3 tie, and the tie broke arbitrarily
+on set ordering -- which is why the live `profiles.yaml` says
+**`preferred_encoder: hevc_qsv`** while capability detection on the same box
+reports **`preferred hardware encoder: hevc_vaapi`**, and while Session 3's
+calibration concluded vaapi is *both faster and better at every resolution*.
+
+This is not cosmetic. `Ladder.rung_for` ranks the preferred encoder first, so
+production TV encodes are currently planned on `hevc_qsv` at **25.5 fps**
+instead of `hevc_vaapi` at **33.0 fps** -- roughly 30% slower across a
+4,628-file tier. qsv also never reached VMAF 95 at 1080p in the first run
+(best 94.4), so if it stays preferred it may pin the movie rungs too.
+
+Adding movie rungs will not fix it: both encoders gain rungs, the tie persists.
+**Decide this deliberately after reading the new ladder** -- either fix the
+selection in `bench/ladder.py` to rank by measured VMAF-at-speed, or set
+`preferred_encoder` by hand in `profiles.yaml`. Do not just let the next
+`bench.ladder` run pick again.
+
+### Open items for the next session, in order
+
+1. **Finish the movie ladder.** The run is scheduled and the sources are
+   finally valid; what is left is reading the result, deciding the
+   `preferred_encoder` question, and combining with the two TV runs. See the
+   three-step finish above.
+2. **Seven more encode outcomes** before `app calibrate` has 8 for a model.
+3. **Settle the Look Back rescan question** -- why that install triggered no
+   *arr rescan when every other one, including all six here, did.
+4. **Then the encode tier.** 4,628 pending. Budget it on how much can run
+   uncontended, per the 1.12x finding above.
+
+### What this session did NOT check
+
+- **The TrueHD 3.1 MB/s hypothesis is still unconfirmed.** Still nobody has
+  looked at `job.cmd` for a lossless-audio title.
+- **Only 2 of the 212 installed remuxes have ever been watched**, plus the
+  three from Session 7. The other 207 are trusted on verification alone.
+- **Nothing was done about the 238 duplicate groups** (166 GB, 150 needing a
+  human decision). Untouched since Session 6.
 
 ---
 
