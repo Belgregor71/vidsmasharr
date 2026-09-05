@@ -1,4 +1,4 @@
-# Handover — sessions 1–10 (2026-08-27 → 09-03)
+# Handover — sessions 1–11 (2026-08-27 → 09-05)
 
 Read this first. It records what is *verified* on the real hardware versus what
 is still assumed, so tomorrow doesn't re-litigate settled decisions or trust
@@ -17,17 +17,22 @@ of them watched on a TV, all six installed, originals deleted, 62.98 GB of
 stale scratch swept.** The remux tier is now genuinely complete at **212 files
 and 447 GB**.
 
-**A movie ladder calibration is parked on the NAS, waiting for 21:00 on
-2026-09-04.** Sources were hand-picked this time rather than sampled -- which
-is why both previous attempts were invalid -- and the sweep reaches below the
-old qp floor of 20. **Read `~/bench-movies.log` first.** Session 10 has the
-full brief and the three-step finish, including the combine command that keeps
-the TV rungs.
+**Every VMAF number this project produced before 2026-09-05 is wrong, and
+the cause is found, fixed and deployed.** `libvmaf` was comparing two streams
+on different clocks and mispairing about three frames in every twenty-four.
+The movie ladder that said VMAF 95 was unreachable was measuring the harness:
+the same clip and setting scores **98.2, not 90.6**, once both legs share a
+frame rate. **Read Session 11 before trusting any stored measurement.**
 
-**Do not skip the `preferred_encoder` finding in Session 10.** The live ladder
-prefers `hevc_qsv`, which is ~30% slower than `hevc_vaapi` and never reached
-VMAF 95; it was chosen by counting rungs, not by measuring anything. That needs
-a deliberate decision before the encode tier starts.
+**A re-run is parked for 21:00 on 2026-09-05** on the fixed code. Read
+`~/bench-movies.log` first; Session 10 has the three-step finish, including the
+combine command that keeps the TV rungs -- but note the TV runs are
+contaminated too, so combining them forward carries the old error.
+
+**Two decisions are waiting, both in Sessions 10-11.** `preferred_encoder` is
+chosen by counting rungs rather than measuring anything, so production prefers
+`hevc_qsv` -- ~30% slower than `hevc_vaapi`. And the TV rungs need re-measuring,
+not just re-deriving: the stored rows are the problem.
 
 Note the second, quieter blocker: **outcomes are at 213 but still only 1 is an
 encode.** `app calibrate` needs 8 *per model*. That is **seven more encodes**,
@@ -46,11 +51,11 @@ Session 10 before touching anything.
 
 | | where it stands |
 |---|---|
-| Code | Phases 0-4 built, **356 tests**, **`main` at `7fc9d85`** and pushed. `ladder-robust` is merged and deleted -- `main` is the only branch on the remote |
+| Code | Phases 0-4 built, **359 tests**, **`main` at `55674cc`**, NOT yet pushed (`7fc9d85` was the last pushed). `ladder-robust` is merged and deleted -- `main` is the only branch on the remote |
 | Working tree | **clean, bar a permanent `git status` lie.** 19 files show as ` M` forever: `core.autocrlf=true` fights `.gitattributes eol=lf`, so the index stat data never settles. Their `git diff --numstat` is empty and there is nothing uncommitted in them. Do not "fix" them by committing -- `git diff --stat` separates real from phantom, and `git config core.autocrlf false` silences it |
 | NAS repo | **NOT a git checkout -- `git` is not on PATH.** md5-swept 2026-08-31 at `485c74c`; on 2026-09-02 four files were replaced with the `7fc9d85` versions by checksum-verified download and the image rebuilt. Tree and image agree. See below |
 | TV ladder | **written to `profiles.yaml` 2026-08-29.** The live file says `preferred_encoder: hevc_qsv`, tv/1080p at `global_quality 21`, `target_vmaf 92`, expected ratio 0.3576 |
-| Movie ladder | **calibration scheduled 2026-09-04 21:00** (the 09-03 attempt aborted on a guard bug, clips were always fine). First run with valid hand-picked sources. Still absent until it lands and is combined. See Session 10 |
+| Movie ladder | **still absent. The 09-04 run completed but its measurements are invalid** -- see Session 11. Re-armed for **2026-09-05 21:00** on fixed code. Sources were always fine |
 | Direct play | **VERIFIED 2026-08-30 -- Direct Play on both TVs.** No longer a blocker |
 | *arr guard | **APPLIED 2026-08-30** with `--neutralise`; second pass says "nothing to write" |
 | NAS `config.yaml` | **complete 2026-08-30.** Plex token, Tautulli key, both *arr keys, correct `path_map`. No FILL MEs left |
@@ -756,6 +761,104 @@ never before. Re-run `app plan` afterwards -- the queue order is the point.
 
 ---
 
+## Session 11 (2026-09-05): every VMAF number so far was measured wrong
+
+The movie calibration ran overnight and concluded that **VMAF 95 is
+unreachable for movies on this box** -- best 89.1, every rung pinned to the
+sweep floor, vaapi at 77% of source. **That conclusion is false.** It was
+measuring the harness, not the encoder.
+
+### What was actually wrong
+
+`libvmaf` was being handed two streams on different clocks. Matroska stores
+timestamps in milliseconds, so 1/23.976s is written as the repeating pattern
+**42, 42, 41** -- and an encode re-derives that phase independently of its
+source:
+
+```
+reference: 42 42 41 42 42 41 42 42 42 41 ...
+encoded:   42 41 42 42 42 41 42 42 41 42 ...
+```
+
+They drift, framesync pairs the wrong frames, and those frames score near zero
+however good the encode is. On one clip at qp 16, 68 of 927 frames scored under
+50 -- arriving on a **metronome**: 2, 9, 19, 26, 33, 43, 50, 57, 67. Three bad
+frames in every twenty-four. Real artefacts do not keep time.
+
+| same clip, same qp 16 | mean | min | p1 | frames < 50 |
+|---|---|---|---|---|
+| as shipped | 90.615 | **0.000** | **0.000** | **68** |
+| both legs on one rate | **98.229** | **93.393** | **94.929** | **0** |
+
+**VMAF 95 is reachable for movies, comfortably.**
+
+### What was ruled out first, so nobody re-litigates it
+
+- **Not corrupt clips.** All six decode with zero errors and start on keyframes.
+- **Not the decode path.** Hardware and software decode scored *identically*,
+  to two decimals. Step 2b's choice is irrelevant here.
+- **Not dropped frames.** Encoded frame count equals reference exactly, 927=927.
+- **Not a wholesale broken harness.** A clip scored against *itself* gives
+  99.47 mean / 97.43 min with no zeros -- because that comparison is symmetric
+  and the phase error cancels.
+
+The tell was that `p1` was **pinned and invariant across the whole quality
+sweep** -- Sinners_0 scored exactly 0.0 at qp 16, 18, 20, 22 and 24. A score
+that does not move when quality moves is not measuring quality.
+
+### The blast radius
+
+`build_vmaf_command` is shared by the benchmark and by production verification.
+
+- **Every VMAF number this project has produced is understated**, ~7.6 points
+  on this sample.
+- **Run `fd3a44cc2587` (2026-09-04) is contaminated -- do not build a ladder
+  from it.** So are the two TV runs `9ece8030435f` and `02fab81caf6b`.
+- **The TV rungs are calibrated too conservatively.** They were set at qp 22-24
+  against a target of 92 using depressed scores, so real savings across the
+  4,628-file encode tier are being left on the table. Re-deriving them needs
+  fresh measurements, not a re-run of `bench.ladder` -- the stored rows are the
+  problem.
+- **The clips those rungs "set aside as unreachable"** (Willow 88.0, Minx 91.9,
+  Secret Level 91.4) are suspect for the same reason.
+- **Production verification read low too.** That is the safe direction -- it
+  rejected sound encodes rather than passing bad ones -- but it is the same
+  code path that gates deleting originals.
+
+This also retro-explains the note in "Open questions" that an earlier movie
+calibration failed because *"`Pitch_Black` clip 1 was a broken comparison"*.
+Same bug, recorded at the time as bad luck.
+
+### The fix, and where it is
+
+`build_vmaf_command` takes an `fps` and forces both legs onto it before
+`libvmaf`. The rate comes from callers that already know it -- `clip.info.v_fps`
+in the benchmark, the probed source in verification -- so nothing has to probe
+twice. **359 tests**, up from 356; the three new ones pin the filter onto both
+legs, keep it off when no rate is known, and fix the order scale -> fps ->
+format.
+
+Committed as **`55674cc`**, and **deployed**: all four changed files md5-match
+inside the rebuilt image, and the image was asked to build a command and
+confirm `fps=` appears on both legs rather than trusting the build.
+
+### Re-armed
+
+The same calibration is parked again for **21:00 on 2026-09-05** -- same three
+sources, same `--qp-sweep 16 18 20 22 24`, still writing to
+`/scratch/bench-movies/profiles.movie-only.yaml`. Expect it to reach the target
+this time, and expect the rungs to land at a much coarser qp than 16.
+
+### Still not fixed, deliberately
+
+**`extract_clips` does not bound clip length.** Every clip is cut with `-t 30`
+and none is 30 seconds: Sinners_0 is 38.788s / 927 frames, and the six range
+726-942 frames. `-ss` before `-i` with `-c copy` is not limiting the output the
+way the code assumes. It does not affect correctness -- the clip is its own
+reference -- but the sweep costs ~30% more than it should.
+
+---
+
 ## Session 10 (2026-09-03): the six came back, and the estimator was never the problem
 
 The six quarantined remuxes are re-run, watched, installed and swept. The remux
@@ -950,10 +1053,9 @@ selection in `bench/ladder.py` to rank by measured VMAF-at-speed, or set
 
 ### Open items for the next session, in order
 
-1. **Finish the movie ladder.** The run is scheduled and the sources are
-   finally valid; what is left is reading the result, deciding the
-   `preferred_encoder` question, and combining with the two TV runs. See the
-   three-step finish above.
+1. **Finish the movie ladder** from the 2026-09-05 re-run, on fixed code.
+   Then decide `preferred_encoder`. Do **not** combine the old TV runs forward
+   without re-measuring them -- see Session 11.
 2. **Seven more encode outcomes** before `app calibrate` has 8 for a model.
 3. **Settle the Look Back rescan question** -- why that install triggered no
    *arr rescan when every other one, including all six here, did.
