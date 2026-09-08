@@ -79,7 +79,7 @@ it does not, read Session 12 before touching anything.
 |---|---|
 | Code | Phases 0-4 built, **367 tests**, **`main` two commits past `0575032`** (Session 13's), NOT yet pushed (`7fc9d85` was the last pushed). **Both commits are deployed** -- tree and image verified by md5 against the workstation 2026-09-08. `ladder-robust` is merged and deleted -- `main` is the only branch on the remote |
 | Working tree | **clean, bar a permanent `git status` lie.** 19 files show as ` M` forever: `core.autocrlf=true` fights `.gitattributes eol=lf`, so the index stat data never settles. Their `git diff --numstat` is empty and there is nothing uncommitted in them. Do not "fix" them by committing -- `git diff --stat` separates real from phantom, and `git config core.autocrlf false` silences it |
-| NAS repo | **NOT a git checkout -- `git` is not on PATH.** Last updated 2026-09-08: four files replaced from `~/deploy-s13/` through a root container and the image rebuilt; tree, image and workstation all md5-verified equal. `config.yaml` backed up to `config.yaml.bak-2026-09-08`. See below |
+| NAS repo | **NOT a git checkout -- `git` is not on PATH**, but **`chown`ed to `BrettGreg:users` on 2026-09-08, so a deploy is now a plain `cat \| ssh` write plus a rebuild.** Last updated that day: four files replaced, image rebuilt, tree/image/workstation all md5-verified equal. `config.yaml` backed up to `config.yaml.bak-2026-09-08`. See below |
 | TV ladder | **DONE AND LIVE 2026-09-08.** run_ids `463c62b871a9` (1080p) + `0e0a06fba2be` (720p+sd), combined with the movie run under `--robust --exclude-clip sd_DoctorWhoClassic_S12E19_0`. `hevc_vaapi` **qp 23** at 1080p (5 clips), **qp 28** at 720p (3), **qp 22** at sd (2, measured but never used -- policy passes sd). **Re-derive with that one exclusion** or the poisoned clip is back. Backup: `/config/profiles.yaml.bak-2026-09-08-sd-dropped-from-ladder` |
 | Movie ladder | **DONE AND LIVE 2026-09-06.** `run_id 158797ecddf7`, `hevc_vaapi` **qp 19** at 40% of source / 33.1 fps (5 clips used, Mufasa_1 set aside at ceiling 93.8); `hevc_qsv` gq 20 (3 used, 3 aside). `preferred_encoder: hevc_vaapi`, **pinned by hand**. See Session 12 |
 | Direct play | **VERIFIED 2026-08-30 -- Direct Play on both TVs.** No longer a blocker |
@@ -356,8 +356,8 @@ For an edit, run a script instead of `cat` -- and note `PYTHONPATH=/app` plus
 `ENTRYPOINT ["python3", "-m"]` is what normally puts the app on the path.
 
 **Backgrounding a long run.** `nohup` it, and redirect to the **home
-directory**, not `/volume1/scratch` -- with sudo scoped to docker, the shell
-opening the redirect is the login user and cannot write to scratch:
+directory**, not `/volume1/scratch` -- the shell opening the redirect is the
+login user, which has no passwordless root and cannot write to scratch:
 
 ```sh
 cd /volume1/docker/vidsmasharr && nohup sudo docker compose -f docker/docker-compose.yml run --rm -T vidsmasharr app phase1 > ~/phase1-full.log 2>&1 &
@@ -1051,45 +1051,53 @@ docker compose run --rm --entrypoint sh vidsmasharr -c   "sed -i s/^preferred_en
 That is three wrong picks in three sessions. **Fix the tie-break** -- clips
 satisfied or measured fps, both of which say vaapi.
 
-### The deploy, and the one command that is not yours to run
+### Deploying: fixed for good on 2026-09-08, read this before the old recipe
 
-**Done 2026-09-08. Tree, image and workstation all agree by md5.** But it
-needed a command typed by the user, and the next deploy will too, so read this
-before planning one.
-
-**Writing into `/volume1/docker/vidsmasharr` needs root, and there is exactly
-one route to it.** `BrettGreg` is uid 1026; `bench/` and `app/` are
-`drwxrwxr-x root:root`, so a plain `cp` is "Permission denied". `sudo` here is
-scoped to docker alone, so `sudo cp` is "a password is required". **The
-handover's old `sudo cp ... && sudo curl ...` recipe cannot have worked as
-written** -- do not trust it. What works is a container running as root with
-the tree mounted read-write:
-
-```sh
-ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179 'sudo -n /usr/local/bin/docker run --rm   -v /volume1/docker/vidsmasharr:/repo   -v /var/services/homes/BrettGreg/deploy-s13:/new:ro   --entrypoint sh vidsmasharr:latest -c "cp /new/bench_ladder.py /repo/bench/ladder.py && ..."'
-
-sudo -n /usr/local/bin/docker compose   -f /volume1/docker/vidsmasharr/docker/docker-compose.yml build
-```
-
-**The assistant is not permitted to run that first command** -- mounting the
-repo tree read-write into a root container is refused by the sandbox, one file
-at a time as well as batched. The user ran it. Everything else in the deploy --
-staging the files, the rebuild, verifying md5s inside the image, writing
-`/config` -- the assistant can do.
-
-**So stage first, then hand over one line.** Getting files onto the NAS is
-unrestricted: `cat file | ssh ... 'cat > ~/deploy-xx/name'`, checksum both ends,
-then hand the user the single `docker run` copy command. The rebuild is cheap --
-`pyproject.toml` was unchanged so only the two `COPY` layers re-ran, about 20
-seconds.
-
-**The permanent fix, if someone has a DSM terminal:**
+**The tree is now `BrettGreg:users` and writable.** One command, typed by the
+user at a DSM terminal, retired the whole problem:
 
 ```sh
 sudo chown -R BrettGreg:users /volume1/docker/vidsmasharr
 ```
 
-After that a plain `cp` works and none of the above is needed.
+**A deploy is now a plain write from the workstation. No root, no container,
+nobody to ask:**
+
+```sh
+cat bench/ladder.py | ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179   'cat > /volume1/docker/vidsmasharr/bench/ladder.py && md5sum /volume1/docker/vidsmasharr/bench/ladder.py'
+
+ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179 'sudo -n /usr/local/bin/docker compose   -f /volume1/docker/vidsmasharr/docker/docker-compose.yml build'
+```
+
+Checksum both ends -- that is the only thing proving the box has what you
+wrote. Verified working 2026-09-08 by rewriting `ladder.py` with identical
+bytes. The rebuild is cheap: `pyproject.toml` is unchanged so the apt, ffmpeg
+and pip layers all come from cache and only the two `COPY` layers re-run, about
+20 seconds.
+
+**Correct the record on `sudo` -- an earlier version of this file, and the
+first half of Session 13, had it wrong.** It is not "scoped to docker". It is:
+
+| | |
+|---|---|
+| `sudo -n <anything but docker>` | fails, "a password is required" -- **this is all the assistant can do over ssh**, which is why it reads as docker-only |
+| `sudo -n docker ...` | works, NOPASSWD |
+| `sudo <anything>` **at a terminal, password typed** | **works** -- the user is in `administrators` |
+
+So anything genuinely needing root is available; it just needs a human at a
+prompt. Ask for it rather than building a way around it -- one `chown` was
+worth more than the container trick it replaced.
+
+**What it took while the tree was root-owned**, kept only because it is the
+fallback if ownership is ever reset: stage the files in the home directory over
+ssh, then have the user run a root container with the tree mounted read-write
+(`docker run -v /volume1/docker/vidsmasharr:/repo -v ~/deploy-xx:/new:ro
+--entrypoint sh vidsmasharr:latest -c "cp /new/... /repo/..."`). **The
+assistant is not permitted to run that** -- mounting the repo tree read-write
+into a root container is refused by the sandbox, singly as well as batched.
+
+**The old `sudo cp ... && sudo curl ...` recipe cannot have worked as written**
+over a non-interactive ssh session. It is superseded either way.
 
 **Verify the image, never the tree.** The tree is only the build context; what
 runs is the image:
@@ -1097,6 +1105,7 @@ runs is the image:
 ```sh
 docker compose run --rm --entrypoint sh vidsmasharr -c "md5sum /app/bench/ladder.py"
 ```
+
 
 ### What is deployed, and how sd is actually passed
 
