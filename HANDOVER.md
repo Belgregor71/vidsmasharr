@@ -10,7 +10,9 @@ unverified ones.
 
 **The TV ladder ran overnight on 2026-09-07 and is live.** `app plan` queues
 **4,939 jobs, 6,237 GB over 2,602 encode-hours**. **The sd tier is passed on
-deliberately** -- it has no rungs and is not meant to get any; see Session 13.
+deliberately**, by `policy.skip_resolutions: [sd]` in the NAS `config.yaml` --
+it is still measured and still in the ladder, it is just not encoded. 783 files
+report "resolution tier passed by policy". See Session 13.
 **Two of the eleven clips were poisoned and had to be excluded by name** --
 read "The TV ladder ran, and two clips had to be thrown out" below before you
 re-derive anything from those run_ids. The box is idle: no container running,
@@ -45,9 +47,9 @@ set iteration order and happened to land right. Check the line, every time.
 
 **The TV tier has a ladder again, measured on fixed code.** `hevc_vaapi` at
 **qp 23 for 1080p** (31% of source, 33.5 fps, 5 clips) and **qp 28 for 720p**
-(47%, 3 clips). **No sd rung, on purpose.** Files reporting "no ladder rung for
-that resolution" fell from **6,701 to 866**, and 254 of those 866 are the sd
-files the tier was passed on. Backups:
+(47%, 3 clips). The sd rungs are measured and present but never
+used, because policy passes that tier. Files reporting "no ladder rung for that
+resolution" fell from **6,701 to 83**. Backups:
 `/config/profiles.yaml.bak-2026-09-08-before-tv-combine` (the movie-only
 ladder) and `/config/profiles.yaml.bak-2026-09-06-tv-contaminated` (the six
 dropped rungs).
@@ -75,10 +77,10 @@ it does not, read Session 12 before touching anything.
 
 | | where it stands |
 |---|---|
-| Code | Phases 0-4 built, **367 tests**, **`main` two commits past `0575032`** (Session 13's), NOT yet pushed (`7fc9d85` was the last pushed). **The image does NOT have those two commits -- the deploy is blocked, see Session 13.** `ladder-robust` is merged and deleted -- `main` is the only branch on the remote |
+| Code | Phases 0-4 built, **367 tests**, **`main` two commits past `0575032`** (Session 13's), NOT yet pushed (`7fc9d85` was the last pushed). **Both commits are deployed** -- tree and image verified by md5 against the workstation 2026-09-08. `ladder-robust` is merged and deleted -- `main` is the only branch on the remote |
 | Working tree | **clean, bar a permanent `git status` lie.** 19 files show as ` M` forever: `core.autocrlf=true` fights `.gitattributes eol=lf`, so the index stat data never settles. Their `git diff --numstat` is empty and there is nothing uncommitted in them. Do not "fix" them by committing -- `git diff --stat` separates real from phantom, and `git config core.autocrlf false` silences it |
-| NAS repo | **NOT a git checkout -- `git` is not on PATH.** md5-swept 2026-08-31 at `485c74c`; on 2026-09-02 four files were replaced with the `7fc9d85` versions by checksum-verified download and the image rebuilt. Tree and image agree. See below |
-| TV ladder | **DONE AND LIVE 2026-09-08.** run_ids `463c62b871a9` (1080p) + `0e0a06fba2be` (720p+sd), combined with the movie run under `--robust`. `hevc_vaapi` **qp 23** at 1080p (5 clips) and **qp 28** at 720p (3 clips). **The three sd clips are excluded by name and sd has no rung** -- that is the policy, not a gap. Re-derive with the same `--exclude-clip` list or sd comes back. Backup: `/config/profiles.yaml.bak-2026-09-08-with-sd` |
+| NAS repo | **NOT a git checkout -- `git` is not on PATH.** Last updated 2026-09-08: four files replaced from `~/deploy-s13/` through a root container and the image rebuilt; tree, image and workstation all md5-verified equal. `config.yaml` backed up to `config.yaml.bak-2026-09-08`. See below |
+| TV ladder | **DONE AND LIVE 2026-09-08.** run_ids `463c62b871a9` (1080p) + `0e0a06fba2be` (720p+sd), combined with the movie run under `--robust --exclude-clip sd_DoctorWhoClassic_S12E19_0`. `hevc_vaapi` **qp 23** at 1080p (5 clips), **qp 28** at 720p (3), **qp 22** at sd (2, measured but never used -- policy passes sd). **Re-derive with that one exclusion** or the poisoned clip is back. Backup: `/config/profiles.yaml.bak-2026-09-08-sd-dropped-from-ladder` |
 | Movie ladder | **DONE AND LIVE 2026-09-06.** `run_id 158797ecddf7`, `hevc_vaapi` **qp 19** at 40% of source / 33.1 fps (5 clips used, Mufasa_1 set aside at ceiling 93.8); `hevc_qsv` gq 20 (3 used, 3 aside). `preferred_encoder: hevc_vaapi`, **pinned by hand**. See Session 12 |
 | Direct play | **VERIFIED 2026-08-30 -- Direct Play on both TVs.** No longer a blocker |
 | *arr guard | **APPLIED 2026-08-30** with `--neutralise`; second pass says "nothing to write" |
@@ -999,21 +1001,12 @@ below the floor" to "no ladder rung", i.e. the 20% floor was already rejecting
 them -- a 79% size ratio is a 21% saving, sitting on the floor. `min_source_bytes`
 at 700 MB had filtered nearly all of sd out long before the ladder saw it.
 
-**Two ways to pass a tier, and only one of them is deployed.**
-
-1. **`policy.skip_resolutions: ["sd"]`** -- written this session, **not in the
-   image** (see below). Blocks the encode by policy, reports "resolution tier
-   passed by policy", still takes a free audio-only remux, and rejects a
-   misspelt tier rather than silently encoding everything.
-2. **Leave sd out of the ladder** -- what is actually live. Re-derive with the
-   three sd clips excluded and the planner reports "no ladder rung for that
-   resolution". Behaviourally identical. **The catch: a future `bench.ladder`
-   run without that `--exclude-clip` list silently restores the sd rungs.** The
-   live file is the only record of the decision.
-
-```sh
-bench.ladder --run-id 463c62b871a9 0e0a06fba2be 158797ecddf7 --robust   --exclude-clip sd_DoctorWhoClassic_S12E19_0 sd_Buffy_S02E19_0 sd_BlueHeelers_S08E37_0
-```
+**It is passed by policy, not by omission.** `policy.skip_resolutions: [sd]`
+in the NAS `config.yaml` blocks the encode, reports "resolution tier passed by
+policy", still takes a free audio-only remux, and rejects a misspelt tier
+rather than silently encoding everything. The sd rungs stay in `profiles.yaml`
+as the measurement they are. See "What is deployed, and how sd is actually
+passed" below for why it is not done by leaving the rungs out.
 
 ### `_resolution_of` did not agree with the planner, and that cost a rung
 
@@ -1058,64 +1051,92 @@ docker compose run --rm --entrypoint sh vidsmasharr -c   "sed -i s/^preferred_en
 That is three wrong picks in three sessions. **Fix the tie-break** -- clips
 satisfied or measured fps, both of which say vaapi.
 
-### The deploy is BLOCKED -- the image does not have this session's code
+### The deploy, and the one command that is not yours to run
 
-**`bench.ladder --exclude-clip`, `policy.skip_resolutions` and the
-`_resolution_of` fix are committed locally and are NOT in `vidsmasharr:latest`.**
-Everything above was produced by bind-mounting `ladder.py` over the baked file
-for the length of one run. The live `profiles.yaml` is *data*, so the ladder
-itself is live and the planner reads it with stock code -- but the flags are
-not there.
+**Done 2026-09-08. Tree, image and workstation all agree by md5.** But it
+needed a command typed by the user, and the next deploy will too, so read this
+before planning one.
 
-**Why it could not be finished.** Writing into `/volume1/docker/vidsmasharr`
-needs root. `BrettGreg` is uid 1026 and `bench/` is `drwxrwxr-x root:root`, so
-a plain `cp` is "Permission denied". `sudo` on this box is scoped to docker
-alone, so `sudo cp` is "a password is required". That leaves writing through a
-root container with the repo tree mounted read-write -- and that was **refused
-by the sandbox**, one file at a time as well as in a batch. The handover's old
-`sudo cp ... && sudo curl ...` deploy recipe **cannot have worked as written**
-either; treat it as unverified.
-
-**Everything is staged for whoever has the permission.** The four changed files
-are on the NAS at `~/deploy-s13/`, checksum-verified against the workstation:
-
-| file | md5 |
-|---|---|
-| `bench/ladder.py` | `18a463901f5ecf8e6c5133e9ca758be8` |
-| `app/config.py` | `cde71ddd87a95cca0711e5aef143ad87` |
-| `app/plan/rules.py` | `5e5a8534dc8f3c4e4c60dc0c962daa90` |
-| `app/plan/planner.py` | `d2d1e0b5542addcd29c073d43a4bbaec` |
-
-The versions they replace are backed up at `/scratch/deploy-bak-2026-09-08/`.
-The other three tree files matched `HEAD` exactly beforehand, so there is no
-drift to reconcile -- only `bench/ladder.py` was behind. To finish:
+**Writing into `/volume1/docker/vidsmasharr` needs root, and there is exactly
+one route to it.** `BrettGreg` is uid 1026; `bench/` and `app/` are
+`drwxrwxr-x root:root`, so a plain `cp` is "Permission denied". `sudo` here is
+scoped to docker alone, so `sudo cp` is "a password is required". **The
+handover's old `sudo cp ... && sudo curl ...` recipe cannot have worked as
+written** -- do not trust it. What works is a container running as root with
+the tree mounted read-write:
 
 ```sh
-# as root, however you can get there
-cp ~/deploy-s13/bench_ladder.py     /volume1/docker/vidsmasharr/bench/ladder.py
-cp ~/deploy-s13/app_config.py       /volume1/docker/vidsmasharr/app/config.py
-cp ~/deploy-s13/app_plan_rules.py   /volume1/docker/vidsmasharr/app/plan/rules.py
-cp ~/deploy-s13/app_plan_planner.py /volume1/docker/vidsmasharr/app/plan/planner.py
+ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179 'sudo -n /usr/local/bin/docker run --rm   -v /volume1/docker/vidsmasharr:/repo   -v /var/services/homes/BrettGreg/deploy-s13:/new:ro   --entrypoint sh vidsmasharr:latest -c "cp /new/bench_ladder.py /repo/bench/ladder.py && ..."'
+
 sudo -n /usr/local/bin/docker compose   -f /volume1/docker/vidsmasharr/docker/docker-compose.yml build
 ```
 
-Then set `policy.skip_resolutions: ["sd"]` in `/config/config.yaml` and the sd
-decision stops depending on an `--exclude-clip` list nobody will remember.
+**The assistant is not permitted to run that first command** -- mounting the
+repo tree read-write into a root container is refused by the sandbox, one file
+at a time as well as batched. The user ran it. Everything else in the deploy --
+staging the files, the rebuild, verifying md5s inside the image, writing
+`/config` -- the assistant can do.
+
+**So stage first, then hand over one line.** Getting files onto the NAS is
+unrestricted: `cat file | ssh ... 'cat > ~/deploy-xx/name'`, checksum both ends,
+then hand the user the single `docker run` copy command. The rebuild is cheap --
+`pyproject.toml` was unchanged so only the two `COPY` layers re-ran, about 20
+seconds.
+
+**The permanent fix, if someone has a DSM terminal:**
+
+```sh
+sudo chown -R BrettGreg:users /volume1/docker/vidsmasharr
+```
+
+After that a plain `cp` works and none of the above is needed.
+
+**Verify the image, never the tree.** The tree is only the build context; what
+runs is the image:
+
+```sh
+docker compose run --rm --entrypoint sh vidsmasharr -c "md5sum /app/bench/ladder.py"
+```
+
+### What is deployed, and how sd is actually passed
+
+`bench.ladder --exclude-clip`, `policy.skip_resolutions` and the
+`_resolution_of` fix are all in `vidsmasharr:latest` as of 2026-09-08.
+
+**The sd decision moved out of the ladder and into policy, which is where it
+belongs.** While the deploy was blocked, sd was passed by leaving its rungs out
+of `profiles.yaml` -- which worked, but meant the decision lived in a file any
+`bench.ladder` run would overwrite. Now:
+
+- **`profiles.yaml` records what was measured**: eight rungs, sd included at
+  `qp 22` / 79%, derived with only the poisoned Doctor Who clip excluded.
+- **`config.yaml` records the decision**: `policy.skip_resolutions: [sd]`, with
+  the reasoning in a comment beside it.
+
+**The two produce the same plan, which is the point.** Identical queued count,
+GB and hours either way; only the reason changes, and the honest one wins:
+
+| skip reason | ladder-only workaround | `skip_resolutions` |
+|---|---|---|
+| resolution tier passed by policy | -- | **783** |
+| no ladder rung for that resolution | 866 | **83** |
+
+Those 83 are the genuinely uncalibrated leftovers. The 783 now say why.
+
 
 ### Left open
 
-1. **Finish the deploy** -- the blocker, and the only one that matters. Four
-   files staged at `~/deploy-s13/`, recipe and checksums above. Until then the
-   sd decision lives only in the live `profiles.yaml`.
-2. **The mpeg4/DivX sd population -- 2,447 files -- was never measured**, and
+1. **The mpeg4/DivX sd population -- 2,447 files -- was never measured**, and
    with sd passed it never needs to be. Recorded because `hevc_vaapi` could not
    encode a `516x570` source *at all*: if sd is ever brought back, that is a
    capability gap, not a tuning problem.
-3. **Fix the `preferred_encoder` tie-break.** Three wrong picks in three
-   sessions, one of them this session. Break on clips satisfied or measured
-   fps, not rung count.
-4. **Fix `run-tv-bench.sh`'s run_id grep** so a future run reports its own ids.
-5. **Start the encode tier.** Nothing is blocking it: 4,935 encodes queued,
+2. **Fix the `preferred_encoder` tie-break.** **Four** wrong picks in three
+   sessions -- it picked `hevc_qsv` twice more in this session alone, once at
+   three rungs each and once at four. Break on clips satisfied or measured fps,
+   not rung count. Until then, check `head -3 /config/profiles.yaml` after
+   every single write.
+3. **Fix `run-tv-bench.sh`'s run_id grep** so a future run reports its own ids.
+4. **Start the encode tier.** Nothing is blocking it: 4,935 encodes queued,
    6,237 GB, and the first 8 give `app calibrate` its model.
 
 ---
