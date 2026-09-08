@@ -97,15 +97,19 @@ def _metric(m: Measurement) -> float | None:
 
 
 def _resolution_of(m: Measurement) -> str:
-    height = m.out_height or m.src_height or 0
-    width = m.src_width or 0
-    if height >= 1700 or width >= 3000:
-        return "2160p"
-    if height >= 1000:
-        return "1080p"
-    if height >= 700:
-        return "720p"
-    return "sd"
+    """Bucket a measurement the way the planner buckets library files.
+
+    This has to be `probe.resolution_tier` and nothing else. A local copy of
+    the thresholds drifted from it and cost the 2026-09-07 TV run a rung: this
+    function dropped the width clauses, so The Crown S02E06 at 1920x960 --
+    scope with the letterbox cropped -- set the *720p* rung, while every
+    1920x960 file in the library is looked up as 1080p. The rung a clip
+    measures and the rung its own files ask for have to be decided by one
+    function, or the ladder is answering a question nobody asked.
+    """
+    from app.scan.probe import resolution_tier
+
+    return resolution_tier(m.src_width, m.out_height or m.src_height)
 
 
 def _aggregate(

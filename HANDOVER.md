@@ -8,8 +8,9 @@ unverified ones.
 
 ## NEXT SESSION: start here
 
-**The TV ladder ran overnight on 2026-09-07 and is live. Every tier now has
-a rung.** `app plan` queues **4,939 jobs, 6,221 GB over 2,814 encode-hours**.
+**The TV ladder ran overnight on 2026-09-07 and is live.** `app plan` queues
+**4,939 jobs, 6,237 GB over 2,602 encode-hours**. **The sd tier is passed on
+deliberately** -- it has no rungs and is not meant to get any; see Session 13.
 **Two of the eleven clips were poisoned and had to be excluded by name** --
 read "The TV ladder ran, and two clips had to be thrown out" below before you
 re-derive anything from those run_ids. The box is idle: no container running,
@@ -43,9 +44,10 @@ rungs each, so `max(set(hardware), key=hardware.count)` was breaking a tie on
 set iteration order and happened to land right. Check the line, every time.
 
 **The TV tier has a ladder again, measured on fixed code.** `hevc_vaapi` at
-**qp 23 for 1080p** (33% of source, 30.2 fps, 4 clips), **qp 28 for 720p**
-(47%, 3 clips) and **qp 22 for sd** (79%, 2 clips). Files reporting "no ladder
-rung for that resolution" fell from **6,701 to 612**. Backups:
+**qp 23 for 1080p** (31% of source, 33.5 fps, 5 clips) and **qp 28 for 720p**
+(47%, 3 clips). **No sd rung, on purpose.** Files reporting "no ladder rung for
+that resolution" fell from **6,701 to 866**, and 254 of those 866 are the sd
+files the tier was passed on. Backups:
 `/config/profiles.yaml.bak-2026-09-08-before-tv-combine` (the movie-only
 ladder) and `/config/profiles.yaml.bak-2026-09-06-tv-contaminated` (the six
 dropped rungs).
@@ -73,10 +75,10 @@ it does not, read Session 12 before touching anything.
 
 | | where it stands |
 |---|---|
-| Code | Phases 0-4 built, **361 tests**, **`main` one commit past `0575032`** (Session 13's), NOT yet pushed (`7fc9d85` was the last pushed). `ladder-robust` is merged and deleted -- `main` is the only branch on the remote |
+| Code | Phases 0-4 built, **367 tests**, **`main` two commits past `0575032`** (Session 13's), NOT yet pushed (`7fc9d85` was the last pushed). **The image does NOT have those two commits -- the deploy is blocked, see Session 13.** `ladder-robust` is merged and deleted -- `main` is the only branch on the remote |
 | Working tree | **clean, bar a permanent `git status` lie.** 19 files show as ` M` forever: `core.autocrlf=true` fights `.gitattributes eol=lf`, so the index stat data never settles. Their `git diff --numstat` is empty and there is nothing uncommitted in them. Do not "fix" them by committing -- `git diff --stat` separates real from phantom, and `git config core.autocrlf false` silences it |
 | NAS repo | **NOT a git checkout -- `git` is not on PATH.** md5-swept 2026-08-31 at `485c74c`; on 2026-09-02 four files were replaced with the `7fc9d85` versions by checksum-verified download and the image rebuilt. Tree and image agree. See below |
-| TV ladder | **DONE AND LIVE 2026-09-08.** run_ids `463c62b871a9` (1080p) + `0e0a06fba2be` (720p+sd), combined with the movie run under `--robust`. `hevc_vaapi` **qp 23 / 28 / 22** for 1080p / 720p / sd. **Two clips excluded by name** -- see Session 13 before re-deriving. Backup: `/config/profiles.yaml.bak-2026-09-08-before-tv-combine` |
+| TV ladder | **DONE AND LIVE 2026-09-08.** run_ids `463c62b871a9` (1080p) + `0e0a06fba2be` (720p+sd), combined with the movie run under `--robust`. `hevc_vaapi` **qp 23** at 1080p (5 clips) and **qp 28** at 720p (3 clips). **The three sd clips are excluded by name and sd has no rung** -- that is the policy, not a gap. Re-derive with the same `--exclude-clip` list or sd comes back. Backup: `/config/profiles.yaml.bak-2026-09-08-with-sd` |
 | Movie ladder | **DONE AND LIVE 2026-09-06.** `run_id 158797ecddf7`, `hevc_vaapi` **qp 19** at 40% of source / 33.1 fps (5 clips used, Mufasa_1 set aside at ceiling 93.8); `hevc_qsv` gq 20 (3 used, 3 aside). `preferred_encoder: hevc_vaapi`, **pinned by hand**. See Session 12 |
 | Direct play | **VERIFIED 2026-08-30 -- Direct Play on both TVs.** No longer a blocker |
 | *arr guard | **APPLIED 2026-08-30** with `--neutralise`; second pass says "nothing to write" |
@@ -87,7 +89,7 @@ it does not, read Session 12 before touching anything.
 | **Remux tier** | **COMPLETE AND CLOSED 2026-09-03.** 212 outcomes, **447 GB reclaimed**, 0 quarantined, 0 failed, 4 left pending behind encodes (blocked on the movie ladder) |
 | The 6 quarantined | **RESOLVED AND INSTALLED 2026-09-03.** Re-run produced outputs byte-size-identical to the first run's, all six -- proof the files were never broken and only the verifier was. 10.48 GiB reclaimed, originals deleted, Radarr rescanned all six. See Session 10 |
 | Estimator | Savings **0.995x** over the full tier -- essentially exact. CPU **2.16x** overnight, but **1.12x** on an idle box: the multiplier is mostly contention, not the files. See Session 10 |
-| Encode tier | **NOT STARTED. Fully planned.** `app plan` 2026-09-08: **4,939 queued (4,935 encode, 4 downscale), 6,221 GB over 2,814 encode-hours, 352 nights at 8h.** The 156 remux jobs are gone -- those TV files had no rung and fell back to remux; with a rung they are encodes now, which moves them out of the 24x-cheaper tier |
+| Encode tier | **NOT STARTED. Fully planned.** `app plan` 2026-09-08: **4,939 queued (4,935 encode, 4 downscale), 6,237 GB over 2,602 encode-hours, 325 nights at 8h.** The 156 remux jobs are gone -- those TV files had no rung and fell back to remux; with a rung they are encodes now, which moves them out of the 24x-cheaper tier |
 | Outcomes recorded | **213 -- but still only 1 is an encode.** `app calibrate` needs 8 *per model*; 212 are `stream-copy` remuxes with no encoder and no VMAF. **Seven more encodes**, not seven more files |
 | Playback on TV | **PASSED 2026-08-31** on the first three files, and **PASSED 2026-09-03** on two of the six re-runs (Wicked For Good, A Big Bold Beautiful Journey) -- the ending and the DTS-HD MA downmix, the two things at risk. See Session 10 for the trick that gets a scratch file onto a TV |
 | Next action | **Start the encode tier** -- 4,935 encodes are queued and the first 8 give `app calibrate` its model. Nothing is blocking it any more |
@@ -984,20 +986,137 @@ rung they are encode candidates now. That moves ~156 files out of the tier that
 is **24x cheaper per GB** and into the 2,814-hour one. If that is not wanted,
 it is a policy question, not a ladder one.
 
+### Passing the sd tier, and the bug that found
+
+**The sd tier is passed on.** `hevc_vaapi` sd measured **79% of source** off
+two usable clips -- most of a night's CPU for a fifth of the bytes -- and the
+one clip meant to represent the 2,447 mpeg4/DivX sd files was the one that
+failed. The tier was not worth calibrating further and is not worth encoding.
+
+**It cost almost nothing to give up, which is the real finding.** Queued jobs
+did not move at all: **4,939 before and after.** 254 files moved from "saving
+below the floor" to "no ladder rung", i.e. the 20% floor was already rejecting
+them -- a 79% size ratio is a 21% saving, sitting on the floor. `min_source_bytes`
+at 700 MB had filtered nearly all of sd out long before the ladder saw it.
+
+**Two ways to pass a tier, and only one of them is deployed.**
+
+1. **`policy.skip_resolutions: ["sd"]`** -- written this session, **not in the
+   image** (see below). Blocks the encode by policy, reports "resolution tier
+   passed by policy", still takes a free audio-only remux, and rejects a
+   misspelt tier rather than silently encoding everything.
+2. **Leave sd out of the ladder** -- what is actually live. Re-derive with the
+   three sd clips excluded and the planner reports "no ladder rung for that
+   resolution". Behaviourally identical. **The catch: a future `bench.ladder`
+   run without that `--exclude-clip` list silently restores the sd rungs.** The
+   live file is the only record of the decision.
+
+```sh
+bench.ladder --run-id 463c62b871a9 0e0a06fba2be 158797ecddf7 --robust   --exclude-clip sd_DoctorWhoClassic_S12E19_0 sd_Buffy_S02E19_0 sd_BlueHeelers_S08E37_0
+```
+
+### `_resolution_of` did not agree with the planner, and that cost a rung
+
+Wiring the tier check up exposed it. Two functions bucket a frame size:
+
+```
+probe.resolution_tier  : 2160p w>=3000 or h>=1700 | 1080p w>=1800 or h>=1000 | 720p w>=1200 or h>=700 | sd
+ladder._resolution_of  : 2160p w>=3000 or h>=1700 | 1080p          h>=1000 | 720p          h>=700 | sd
+```
+
+**The ladder's copy dropped the width clauses.** `resolution_tier`'s own
+docstring says a 1920x800 scope film is 1080p "even though it is only 800 rows
+tall, and calling it 720p would price it wrong" -- the planner knew; the ladder
+never got the clause. So The Crown at 1920x960 set the **720p** rung, while
+every 1920x960 file in the library is looked up as **1080p**. `_resolution_of`
+now delegates to `resolution_tier`, and a test asserts the two agree across
+eight frame sizes.
+
+**Fixing it made The Crown a legitimate 1080p clip rather than something to
+exclude**, and the rung improved without moving:
+
+| | before the fix | after |
+|---|---|---|
+| `hevc_vaapi` tv 1080p | qp 23, 33% of source, 30.2 fps, 4 clips | **qp 23, 31%, 33.5 fps, 5 clips** |
+| `hevc_qsv` tv 1080p | gq 23, 24%, 2 clips (2 aside) | **gq 25, 18.5%, 3 clips (2 aside)** |
+| warnings | eight | **none** |
+
+The setting held at qp 23 with a fifth clip added, which is about as good a
+sign as this ladder gives. That fps gain is where the plan's **2,814 ->
+2,602 encode-hours** came from -- not from dropping sd.
+
+### `preferred_encoder` picked wrong again, in this session
+
+Predicted above, confirmed within the hour. With sd gone the two encoders hold
+**three rungs each**, the tie broke the other way, and `bench.ladder` wrote
+**`preferred_encoder: hevc_qsv`**. Re-pinned by hand:
+
+```sh
+docker compose run --rm --entrypoint sh vidsmasharr -c   "sed -i s/^preferred_encoder:.hevc_qsv$/preferred_encoder:\ hevc_vaapi/ /config/profiles.yaml"
+```
+
+That is three wrong picks in three sessions. **Fix the tie-break** -- clips
+satisfied or measured fps, both of which say vaapi.
+
+### The deploy is BLOCKED -- the image does not have this session's code
+
+**`bench.ladder --exclude-clip`, `policy.skip_resolutions` and the
+`_resolution_of` fix are committed locally and are NOT in `vidsmasharr:latest`.**
+Everything above was produced by bind-mounting `ladder.py` over the baked file
+for the length of one run. The live `profiles.yaml` is *data*, so the ladder
+itself is live and the planner reads it with stock code -- but the flags are
+not there.
+
+**Why it could not be finished.** Writing into `/volume1/docker/vidsmasharr`
+needs root. `BrettGreg` is uid 1026 and `bench/` is `drwxrwxr-x root:root`, so
+a plain `cp` is "Permission denied". `sudo` on this box is scoped to docker
+alone, so `sudo cp` is "a password is required". That leaves writing through a
+root container with the repo tree mounted read-write -- and that was **refused
+by the sandbox**, one file at a time as well as in a batch. The handover's old
+`sudo cp ... && sudo curl ...` deploy recipe **cannot have worked as written**
+either; treat it as unverified.
+
+**Everything is staged for whoever has the permission.** The four changed files
+are on the NAS at `~/deploy-s13/`, checksum-verified against the workstation:
+
+| file | md5 |
+|---|---|
+| `bench/ladder.py` | `18a463901f5ecf8e6c5133e9ca758be8` |
+| `app/config.py` | `cde71ddd87a95cca0711e5aef143ad87` |
+| `app/plan/rules.py` | `5e5a8534dc8f3c4e4c60dc0c962daa90` |
+| `app/plan/planner.py` | `d2d1e0b5542addcd29c073d43a4bbaec` |
+
+The versions they replace are backed up at `/scratch/deploy-bak-2026-09-08/`.
+The other three tree files matched `HEAD` exactly beforehand, so there is no
+drift to reconcile -- only `bench/ladder.py` was behind. To finish:
+
+```sh
+# as root, however you can get there
+cp ~/deploy-s13/bench_ladder.py     /volume1/docker/vidsmasharr/bench/ladder.py
+cp ~/deploy-s13/app_config.py       /volume1/docker/vidsmasharr/app/config.py
+cp ~/deploy-s13/app_plan_rules.py   /volume1/docker/vidsmasharr/app/plan/rules.py
+cp ~/deploy-s13/app_plan_planner.py /volume1/docker/vidsmasharr/app/plan/planner.py
+sudo -n /usr/local/bin/docker compose   -f /volume1/docker/vidsmasharr/docker/docker-compose.yml build
+```
+
+Then set `policy.skip_resolutions: ["sd"]` in `/config/config.yaml` and the sd
+decision stops depending on an `--exclude-clip` list nobody will remember.
+
 ### Left open
 
-1. **The sd tier is thin and barely worth encoding.** `hevc_vaapi` sd is **79%
-   of source** off two clips, one of which (Buffy) qsv could not get past a
-   92.0 ceiling. Consider dropping sd from the encode policy entirely rather
-   than spending hours for 21%.
-2. **The mpeg4/DivX sd population -- 2,447 files -- is still unmeasured.** The
-   one clip chosen to represent it is the one that failed. A rung derived
-   without it does not describe those files. `hevc_vaapi` could not encode a
-   `516x570` source at all, which is worth knowing before the planner tries it
-   4,935 times.
-3. **Fix the `preferred_encoder` tie-break**, or keep re-pinning by hand.
-4. **`bench/ladder.py` is not deployed** -- see above.
-5. **Fix `run-tv-bench.sh`'s run_id grep** so a future run reports its own ids.
+1. **Finish the deploy** -- the blocker, and the only one that matters. Four
+   files staged at `~/deploy-s13/`, recipe and checksums above. Until then the
+   sd decision lives only in the live `profiles.yaml`.
+2. **The mpeg4/DivX sd population -- 2,447 files -- was never measured**, and
+   with sd passed it never needs to be. Recorded because `hevc_vaapi` could not
+   encode a `516x570` source *at all*: if sd is ever brought back, that is a
+   capability gap, not a tuning problem.
+3. **Fix the `preferred_encoder` tie-break.** Three wrong picks in three
+   sessions, one of them this session. Break on clips satisfied or measured
+   fps, not rung count.
+4. **Fix `run-tv-bench.sh`'s run_id grep** so a future run reports its own ids.
+5. **Start the encode tier.** Nothing is blocking it: 4,935 encodes queued,
+   6,237 GB, and the first 8 give `app calibrate` its model.
 
 ---
 

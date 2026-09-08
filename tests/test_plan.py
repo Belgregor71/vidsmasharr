@@ -88,6 +88,51 @@ def plan_one(f, config, ladder):
     return decide(f, config, ladder, estimate_mod.DEFAULT)
 
 
+class TestSkippedResolutionTiers:
+    """A tier can be calibrated and still not be worth the CPU."""
+
+    SD = dict(v_width=720, v_height=576, v_bitrate=2_500_000, size_bytes=3 * GB)
+
+    def test_a_passed_tier_is_not_encoded(self, config, ladder):
+        before = plan_one(facts(**self.SD), config, ladder)
+        assert before.action == ENCODE  # it would otherwise be worth doing
+
+        config.policy.skip_resolutions = ["sd"]
+        after = plan_one(facts(**self.SD), config, ladder)
+        assert after.action != ENCODE
+        assert "policy passes the sd tier" in after.reason
+
+    def test_passing_sd_leaves_every_other_tier_alone(self, config, ladder):
+        config.policy.skip_resolutions = ["sd"]
+        assert plan_one(facts(), config, ladder).action == ENCODE
+
+    def test_a_passed_tier_still_takes_a_free_audio_win(self, config, ladder):
+        """This passes on the encode, not on the file: a stream copy that
+        drops three foreign tracks costs no CPU and is still worth taking."""
+        config.policy.skip_resolutions = ["sd"]
+        fat_audio = facts(
+            **self.SD,
+            audio=[{"codec": "truehd", "channels": 8, "language": "eng",
+                    "bitrate": 4_000_000},
+                   {"codec": "dts", "channels": 6, "language": "fra",
+                    "bitrate": 1_500_000},
+                   {"codec": "dts", "channels": 6, "language": "deu",
+                    "bitrate": 1_500_000}],
+        )
+        decision = plan_one(fat_audio, config, ladder)
+        assert decision.action == REMUX
+        assert "policy passes the sd tier" in decision.reason
+
+    def test_a_misspelt_tier_is_rejected_rather_than_ignored(self):
+        """`skip_resolutions: [SD]` matching nothing would read as
+        "encode everything" -- the silent no-op this project keeps paying for."""
+        from app.config import PolicyConfig
+
+        assert PolicyConfig(skip_resolutions=["SD "]).skip_resolutions == ["sd"]
+        with pytest.raises(ValueError, match="unknown resolution tier"):
+            PolicyConfig(skip_resolutions=["480p"])
+
+
 # --------------------------------------------------------------- safety first
 
 

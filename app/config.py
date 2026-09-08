@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 GB = 1024**3
 
@@ -166,11 +166,36 @@ class PolicyConfig(BaseModel):
     # which is exactly the shape this exists to filter out. Set to 0 to encode
     # everything regardless of size.
     min_source_bytes: int = 700 * 1024**2
+    # Resolution tiers to leave alone entirely, e.g. ["sd"]. A tier can be
+    # calibrated and still not be worth encoding: the 2026-09-08 sd rung
+    # measured 79% of source, i.e. most of a night's CPU for a fifth of the
+    # bytes. Named tiers still get the free audio-only remux if there is one --
+    # this passes on the *encode*, not on the file.
+    skip_resolutions: list[str] = Field(default_factory=list)
     # Don't let one big show monopolise the queue for weeks.
     max_queued_per_title: int = 25
     # Re-muxing purely to drop audio tracks is nearly free; do it when it buys
     # at least this much.
     audio_remux_min_saving_bytes: int = 300 * 1024 * 1024
+
+    @field_validator("skip_resolutions")
+    @classmethod
+    def _known_tiers(cls, value: list[str]) -> list[str]:
+        """A misspelt tier must not read as "encode everything".
+
+        `skip_resolutions: [SD]` matching nothing is the same silent no-op this
+        project has been bitten by twice: the config says one thing and the
+        plan does another, and nothing in between says so.
+        """
+        known = {"2160p", "1080p", "720p", "sd"}
+        cleaned = [tier.strip().lower() for tier in value]
+        unknown = sorted(set(cleaned) - known)
+        if unknown:
+            raise ValueError(
+                f"unknown resolution tier(s): {', '.join(unknown)}. "
+                f"Known tiers are {', '.join(sorted(known))}"
+            )
+        return cleaned
 
 
 # ---------------------------------------------------------------- root

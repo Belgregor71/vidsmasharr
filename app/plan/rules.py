@@ -251,6 +251,9 @@ def decide(facts: FileFacts, config, ladder, estimator) -> PlannedDecision:
     target_height = None if blocked else target_height_for(facts, policy)
     out_tier = "1080p" if target_height == 1080 else facts.tier
 
+    if not blocked and out_tier in policy.skip_resolutions:
+        blocked = f"policy passes the {out_tier} tier"
+
     if not blocked:
         blocked = ladder.unusable_at(out_tier)
 

@@ -267,6 +267,37 @@ class TestProjection:
         assert "error" in projection
 
 
+class TestResolutionBucketing:
+    """A clip has to land in the rung its own files will ask for."""
+
+    def _m(self, width, height):
+        return Measurement(
+            clip="c", encoder="hevc_vaapi", quality=23.0,
+            src_width=width, src_height=height, out_width=width,
+            out_height=height, frames=750, wall_seconds=12.5, cpu_seconds=3.0,
+            fps=30.0, in_bytes=100, out_bytes=40, size_ratio=0.4,
+            vmaf_mean=93.0, vmaf_min=90.0, vmaf_p1=91.0,
+        )
+
+    def test_scope_framing_is_1080p_not_720p(self):
+        """The Crown S02E06, 2026-09-07: 1920x960 set the 720p rung.
+
+        Scope with the letterbox cropped is 960 rows tall and still a 1080p
+        Bluray. The planner has always known that; the ladder kept its own copy
+        of the thresholds without the width clauses.
+        """
+        assert ladder._resolution_of(self._m(1920, 960)) == "1080p"
+
+    def test_it_agrees_with_the_planner_on_every_tier(self):
+        """One function decides this, or the rung answers the wrong question."""
+        from app.scan.probe import resolution_tier
+
+        for width, height in ((3840, 2160), (1920, 1080), (1920, 960),
+                              (1920, 800), (1280, 720), (720, 576),
+                              (516, 570), (640, 360)):
+            assert ladder._resolution_of(self._m(width, height)) ==                 resolution_tier(width, height), f"{width}x{height}"
+
+
 class TestRebuildFromStoredRuns:
     """Re-running the benchmark costs a night; rebuilding costs seconds."""
 

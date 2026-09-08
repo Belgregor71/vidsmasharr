@@ -300,6 +300,7 @@ def _reason_key(reason: str) -> str:
         ("already ", "already an efficient codec"),
         ("predicted saving", "saving below the floor"),
         ("no calibrated setting", "no ladder rung for that resolution"),
+        ("policy passes the", "resolution tier passed by policy"),
         ("no readable video", "no readable video stream"),
         ("not probed", "not probed yet"),
     ):
