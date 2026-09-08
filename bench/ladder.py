@@ -861,6 +861,17 @@ def main(argv: list[str] | None = None) -> int:
                              "--dry-run, so later rebuilds do not need this flag "
                              "again; rows that already record a class are never "
                              "touched")
+    parser.add_argument("--exclude-clip", nargs="+", default=None, metavar="CLIP",
+                        help="drop these calibration clips by name before "
+                             "anything is derived, e.g. --exclude-clip "
+                             "sd_DoctorWhoClassic_S12E19_0. For a clip whose "
+                             "measurements are wrong rather than merely hard: "
+                             "_drop_broken_clips only catches the shape that "
+                             "inflates while scoring low, so a clip that shrinks "
+                             "normally while scoring nonsense -- an anamorphic "
+                             "source the comparison never aligned, say -- has to "
+                             "be named here. The rows stay in the database; this "
+                             "excludes them from this rebuild only")
     parser.add_argument("--out", default=None,
                         help="where to write profiles.yaml (default: the config dir)")
     parser.add_argument("--dry-run", action="store_true",
@@ -929,6 +940,20 @@ def main(argv: list[str] | None = None) -> int:
                 measurements.append(m)
         for line in persist_run_classes(db, labels, dry_run=args.dry_run):
             print(line)
+        print()
+
+    if args.exclude_clip:
+        wanted = set(args.exclude_clip)
+        present = {m.clip for m in measurements}
+        missing = sorted(wanted - present)
+        if missing:
+            print(f"--exclude-clip names no measured clip: {', '.join(missing)}")
+            print(f"Clips in these run(s): {', '.join(sorted(present))}")
+            return 2
+        for clip in sorted(wanted):
+            n = sum(1 for m in measurements if m.clip == clip)
+            print(f"excluding {clip}: {n} measurement(s) dropped")
+        measurements = [m for m in measurements if m.clip not in wanted]
         print()
 
     scored = [m for m in measurements if m.ok and _metric(m) is not None]

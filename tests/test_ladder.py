@@ -311,6 +311,45 @@ class TestRebuildFromStoredRuns:
         self._store(db, "newer", quality_values=[20])
         assert ladder.all_run_ids(db) == ["older", "newer"]
 
+    def test_a_named_clip_is_dropped_before_anything_is_derived(self, tmp_path, capsys):
+        """The 2026-09-07 TV run: one anamorphic source scored 47 VMAF at every
+        setting while shrinking normally, so _drop_broken_clips -- which only
+        catches the shape that inflates -- left it deciding the sd rung."""
+        db = self._db(tmp_path)
+        self._store(db, "good", quality_values=[20, 23, 26])
+        self._store(db, "poisoned", quality_values=[20, 23, 26], vmaf=47.6)
+
+        rc = ladder.main([
+            "--db", str(tmp_path / "bench.db"),
+            "--run-id", "good", "poisoned",
+            "--exclude-clip", "poisoned_clip",
+            "--dry-run",
+        ])
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "excluding poisoned_clip: 3 measurement(s) dropped" in out
+        # The count that follows is what actually fed the ladder, not what was
+        # loaded: 3 of the 6 survive, and the rung is the good clip's alone.
+        assert "3 measurement(s), 3 scored" in out
+
+    def test_excluding_a_clip_that_was_never_measured_is_an_error(self, tmp_path, capsys):
+        """A typo must not silently derive the ladder from everything."""
+        db = self._db(tmp_path)
+        self._store(db, "good", quality_values=[20, 23])
+
+        rc = ladder.main([
+            "--db", str(tmp_path / "bench.db"),
+            "--run-id", "good",
+            "--exclude-clip", "sd_DoctorWho_typo",
+            "--dry-run",
+        ])
+
+        out = capsys.readouterr().out
+        assert rc == 2
+        assert "names no measured clip: sd_DoctorWho_typo" in out
+        assert "good_clip" in out  # says what it could have excluded
+
     def test_an_unreachable_target_says_how_to_fix_it(self):
         from bench.runner import Measurement
 

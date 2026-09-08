@@ -1,4 +1,4 @@
-# Handover — sessions 1–12 (2026-08-27 → 09-06)
+# Handover — sessions 1–13 (2026-08-27 → 09-08)
 
 Read this first. It records what is *verified* on the real hardware versus what
 is still assumed, so tomorrow doesn't re-litigate settled decisions or trust
@@ -8,15 +8,21 @@ unverified ones.
 
 ## NEXT SESSION: start here
 
+**The TV ladder ran overnight on 2026-09-07 and is live. Every tier now has
+a rung.** `app plan` queues **4,939 jobs, 6,221 GB over 2,814 encode-hours**.
+**Two of the eleven clips were poisoned and had to be excluded by name** --
+read "The TV ladder ran, and two clips had to be thrown out" below before you
+re-derive anything from those run_ids. The box is idle: no container running,
+no supervisor process, nothing to start or stop.
+
 **The movie ladder is done and live. The remux tier is finished and fully
-closed out.** The box is idle -- no container running, no supervisor process,
-nothing to start or stop. Nothing was encoded, moved or deleted in Session 12.
+closed out.** Nothing was encoded, moved or deleted in Session 12.
 
 **Session 12 landed the movie ladder: `hevc_vaapi` at `qp 19`, 40% of source,
 5 of 6 clips satisfied. VMAF 95 IS reachable for movies -- `quality.movie_vmaf`
 does not need lowering.** That closes the question Sessions 7-11 kept reopening.
-`app plan` now queues **559 jobs (403 encode, 156 remux), 1,704 GB over 542
-encode-hours**.
+`app plan` queued **559 jobs** on the movie ladder alone; the TV ladder has
+since taken that to 4,939 -- see Session 13.
 
 **Two traps in Session 12 that will re-fire if you skip it.** First, a
 movies-only `python -m bench` run writes a `profiles.movie-only.yaml` that says
@@ -31,14 +37,18 @@ sources** -- vaapi already writes one clip at 116% of source at qp 16.
 and satisfies 5 of 6 clips against qsv's 3 of 6.** It is pinned by hand in the
 live `profiles.yaml`; `bench/ladder.py` still picks by rung count and **picked
 `hevc_qsv` wrongly again** in Session 12. Re-pin it after any `bench.ladder`
-write, or fix the function.
+write, or fix the function. **In Session 13 it wrote `hevc_vaapi` unprompted --
+do not read that as fixed.** With TV rungs restored the two encoders hold four
+rungs each, so `max(set(hardware), key=hardware.count)` was breaking a tie on
+set iteration order and happened to land right. Check the line, every time.
 
-**The TV tier now has no ladder, deliberately.** The six contaminated TV rungs
-were dropped rather than combined forward (Session 11: those rows need
-re-measuring, not re-deriving). **6,701 files now report "no ladder rung for
-that resolution".** A fresh TV benchmark on fixed code is the largest piece of
-work outstanding. Backup of the old file:
-`/config/profiles.yaml.bak-2026-09-06-tv-contaminated`.
+**The TV tier has a ladder again, measured on fixed code.** `hevc_vaapi` at
+**qp 23 for 1080p** (33% of source, 30.2 fps, 4 clips), **qp 28 for 720p**
+(47%, 3 clips) and **qp 22 for sd** (79%, 2 clips). Files reporting "no ladder
+rung for that resolution" fell from **6,701 to 612**. Backups:
+`/config/profiles.yaml.bak-2026-09-08-before-tv-combine` (the movie-only
+ladder) and `/config/profiles.yaml.bak-2026-09-06-tv-contaminated` (the six
+dropped rungs).
 
 **Every VMAF number this project produced before 2026-09-05 is still wrong**
 -- `libvmaf` was comparing two streams on different clocks. Fixed and deployed
@@ -47,8 +57,8 @@ before trusting any stored measurement**, including the TV rungs and the
 "unreachable" clips.
 
 The old blocker -- **outcomes at 213 but only 1 an encode** -- now resolves
-itself: 403 encodes are queued, so `app calibrate` reaches 8 per model as soon
-as encoding starts.
+itself: 4,935 encodes are queued, so `app calibrate` reaches 8 per model as
+soon as encoding starts.
 
 **To confirm the state in one command:**
 
@@ -59,14 +69,14 @@ ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179   'sudo -n /usr/local/bin/doc
 It should report 23,287 files and **213 outcomes** (confirmed 2026-09-06). If
 it does not, read Session 12 before touching anything.
 
-### State at a glance (2026-09-06 06:40)
+### State at a glance (2026-09-08 05:30)
 
 | | where it stands |
 |---|---|
-| Code | Phases 0-4 built, **359 tests**, **`main` at `55674cc`**, NOT yet pushed (`7fc9d85` was the last pushed). `ladder-robust` is merged and deleted -- `main` is the only branch on the remote |
+| Code | Phases 0-4 built, **361 tests**, **`main` one commit past `0575032`** (Session 13's), NOT yet pushed (`7fc9d85` was the last pushed). `ladder-robust` is merged and deleted -- `main` is the only branch on the remote |
 | Working tree | **clean, bar a permanent `git status` lie.** 19 files show as ` M` forever: `core.autocrlf=true` fights `.gitattributes eol=lf`, so the index stat data never settles. Their `git diff --numstat` is empty and there is nothing uncommitted in them. Do not "fix" them by committing -- `git diff --stat` separates real from phantom, and `git config core.autocrlf false` silences it |
 | NAS repo | **NOT a git checkout -- `git` is not on PATH.** md5-swept 2026-08-31 at `485c74c`; on 2026-09-02 four files were replaced with the `7fc9d85` versions by checksum-verified download and the image rebuilt. Tree and image agree. See below |
-| TV ladder | **GONE from `profiles.yaml` as of 2026-09-06, deliberately.** The six rungs came from the two contaminated runs and were dropped rather than carried forward. 6,701 files now have no rung. Needs a fresh benchmark, not a rebuild. Backup: `/config/profiles.yaml.bak-2026-09-06-tv-contaminated` |
+| TV ladder | **DONE AND LIVE 2026-09-08.** run_ids `463c62b871a9` (1080p) + `0e0a06fba2be` (720p+sd), combined with the movie run under `--robust`. `hevc_vaapi` **qp 23 / 28 / 22** for 1080p / 720p / sd. **Two clips excluded by name** -- see Session 13 before re-deriving. Backup: `/config/profiles.yaml.bak-2026-09-08-before-tv-combine` |
 | Movie ladder | **DONE AND LIVE 2026-09-06.** `run_id 158797ecddf7`, `hevc_vaapi` **qp 19** at 40% of source / 33.1 fps (5 clips used, Mufasa_1 set aside at ceiling 93.8); `hevc_qsv` gq 20 (3 used, 3 aside). `preferred_encoder: hevc_vaapi`, **pinned by hand**. See Session 12 |
 | Direct play | **VERIFIED 2026-08-30 -- Direct Play on both TVs.** No longer a blocker |
 | *arr guard | **APPLIED 2026-08-30** with `--neutralise`; second pass says "nothing to write" |
@@ -77,14 +87,106 @@ it does not, read Session 12 before touching anything.
 | **Remux tier** | **COMPLETE AND CLOSED 2026-09-03.** 212 outcomes, **447 GB reclaimed**, 0 quarantined, 0 failed, 4 left pending behind encodes (blocked on the movie ladder) |
 | The 6 quarantined | **RESOLVED AND INSTALLED 2026-09-03.** Re-run produced outputs byte-size-identical to the first run's, all six -- proof the files were never broken and only the verifier was. 10.48 GiB reclaimed, originals deleted, Radarr rescanned all six. See Session 10 |
 | Estimator | Savings **0.995x** over the full tier -- essentially exact. CPU **2.16x** overnight, but **1.12x** on an idle box: the multiplier is mostly contention, not the files. See Session 10 |
-| Encode tier | **NOT STARTED, but now plannable.** `app plan` 2026-09-06: **559 queued (403 encode, 156 remux), 1,704 GB over 542 encode-hours, 68 nights at 8h.** Down from 4,628 pending because the TV tier lost its rungs |
+| Encode tier | **NOT STARTED. Fully planned.** `app plan` 2026-09-08: **4,939 queued (4,935 encode, 4 downscale), 6,221 GB over 2,814 encode-hours, 352 nights at 8h.** The 156 remux jobs are gone -- those TV files had no rung and fell back to remux; with a rung they are encodes now, which moves them out of the 24x-cheaper tier |
 | Outcomes recorded | **213 -- but still only 1 is an encode.** `app calibrate` needs 8 *per model*; 212 are `stream-copy` remuxes with no encoder and no VMAF. **Seven more encodes**, not seven more files |
 | Playback on TV | **PASSED 2026-08-31** on the first three files, and **PASSED 2026-09-03** on two of the six re-runs (Wicked For Good, A Big Bold Beautiful Journey) -- the ending and the DTS-HD MA downmix, the two things at risk. See Session 10 for the trick that gets a scratch file onto a TV |
-| Next action | **Start the encode tier** -- 403 movie encodes are queued and the first 8 give `app calibrate` its model. Then re-benchmark TV to restore that tier |
+| Next action | **Start the encode tier** -- 4,935 encodes are queued and the first 8 give `app calibrate` its model. Nothing is blocking it any more |
 | Media library | **REWRITTEN IN PLACE.** 212 files replaced, originals deleted, 451.8 GB reclaimed in total. `delete_original_on_success` **true**, `max_deletes_per_run` **50** |
 | Disk | **4.2 TB free (`df`), 86% used.** The whole remux tier moved this under 2% -- the space is in the encode tier |
 
 ---
+
+## The TV ladder ran, and two clips had to be thrown out
+
+**It ran on schedule and both runs exited clean.** `~/run-tv-bench.sh` under
+`setsid`, logging to `~/bench-tv.log`, which still holds every line of it:
+
+| run | tier | started | finished | encodes | run_id |
+|---|---|---|---|---|---|
+| A | 1080p | 21:01 | 02:24 | 50 stored | `463c62b871a9` |
+| B | 720p + sd | 02:24 | 04:34 | 60 stored | `0e0a06fba2be` |
+
+**The script's own `run_ids in this log:` line printed empty** -- its grep does
+not match the `Stored N measurement(s) under run_id ...` wording the runner
+actually emits. The ids above came from the log body. Fix the grep or read the
+body; do not conclude the ids were lost.
+
+**It was two runs, not one, and that was deliberate.** `bench` calls
+`runner.persist` only after its whole matrix finishes
+(`bench/__main__.py:217`), so an interrupted run loses every encode in it. Run
+A is 1080p alone -- 11.9 TB of the 15.7 TB of TV candidates -- and landed in
+the DB before run B started. Two run_ids, which the combine step takes as
+separate arguments anyway. That structure earned its keep: nothing was lost,
+and the two poisoned clips were both isolated to one run each.
+
+**The sources were chosen from the DB, not by the sampler** -- the same lesson
+the movie ladder cost three sessions to learn. Reservoir sampling picks
+proportionally to root size, so each source was staged as a lone symlink under
+`/scratch/bench-tv/sources-a|b` and `--clips-per-source 1` cut exactly one clip
+from each. The 1080p candidate pool is 5,699 files / 11.93 TB with a
+**byte-weighted median of 8.1 Mbps**, and the picks straddle it:
+
+| clip | Mbps | why | outcome |
+|---|---|---|---|
+| The Last Kingdom S05E01 | 11.6 | Bluray, dark and grainy -- the hard case | hardest 1080p clip; vaapi cleared 92, qsv ceilinged at 89.6 |
+| Fringe S05E04 | 9.5 | also a source in the contaminated runs, so it cross-checks the VMAF fix | used; qsv ceilinged at 92.0 |
+| The Crown S02E06 | 8.3 | Bluray, film-like -- sits on the byte-weighted median | **EXCLUDED -- 1920x960, bucketed as 720p** |
+| Mushoku Tensei S02E02 | 6.4 | anime: 16% of 1080p candidate bytes, and it compresses unlike the rest | used |
+| Yellowjackets S02E05 | 4.8 | the lean end (p25 = 4.7) -- the file with least fat to take | used |
+| Below Deck Sailing Yacht S04E05 | 5.4 | 720p fat end | used |
+| Ugly Betty S03E05 | 2.4 | 720p centre (byte-weighted median 2.7) | used |
+| New Girl S05E13 | 1.7 | 720p lean sitcom | the 720p rung's hardest clip |
+| Doctor Who Classic S12E19 | 2.0 | sd, mpeg4/DivX -- 2,447 of the sd candidates are mpeg4 | **EXCLUDED -- 516x570, vaapi failed, qsv scored nonsense** |
+| Buffy S02E19 | 1.5 | sd x264 | used; ceilinged at 92.0 under qsv |
+| Blue Heelers S08E37 | 1.0 | sd, on the byte-weighted median (1.1) | used |
+
+### The two poisoned clips, and why the code did not catch them
+
+**Doctor Who Classic S12E19 is `516x570`** -- an anamorphic DivX, not a
+rectangular-pixel source. All five `hevc_vaapi` encodes failed outright
+(`Nothing was written into output file, because at least one of its streams
+received no packets`), and all five `hevc_qsv` ones returned **VMAF 47.6 down
+to 41.0 with `p1 = 0.0`**. A 1st-percentile of exactly zero is a comparison
+that never aligned, not a quality reading. That one clip produced the whole sd
+warning *"no tested setting reached VMAF 92.0; best was 47.6 at 20 ... Re-run
+with lower values, e.g. --qp-sweep 14 17 20"* -- **exactly the false
+"unreachable" note Session 12 warned about, on a different tier.**
+
+**`_drop_broken_clips` missed it, and will miss the next one.** That guard
+requires a clip to be *inflating* (`size_ratio > 1.0`) as well as scoring below
+`BROKEN_CLIP_VMAF`. Doctor Who shrank normally -- 36% down to 7% of source --
+while scoring nonsense, so it never matched the shape. **A clip whose
+measurement is wrong rather than merely hard does not have to inflate.**
+
+**The Crown S02E06 is `1920x960`** -- 2.00:1 scope with the letterbox cropped
+off. `_resolution_of` buckets by height, so a 1080p scope Bluray landed in the
+**720p** rung, which is where run A's stray "720p, 1 clip, 16-17% size" rows
+came from. Pooled with New Girl and Ugly Betty it would have handed the 720p
+rung a size ratio no actual 720p file can deliver. Nothing is broken about the
+measurement -- it is in the wrong bucket, which is worse, because it looks
+right.
+
+**Expect both again.** Scope-framed Bluray is common, and 2,447 sd candidates
+are mpeg4. Check `src_width`/`src_height` on every clip before trusting a rung:
+
+```sh
+# the report JSON is the fastest way to see it
+/scratch/bench-tv/a/bench-report-463c62b871a9.json   # measurements[].src_width/src_height
+```
+
+### How the ladder was finished
+
+`bench.ladder` had no way to drop a clip, so **Session 13 added
+`--exclude-clip`** (see below). The combine that produced the live file:
+
+```sh
+bench.ladder --run-id 463c62b871a9 0e0a06fba2be 158797ecddf7 --robust   --exclude-clip sd_DoctorWhoClassic_S12E19_0 1080p_TheCrown_S02E06_0
+```
+
+20 measurements dropped, 150 scored, 8 rungs written. **The movie rungs came
+back byte-identical to what was already live** (`qp 19`, `0.4005`, 5 clips
+used) -- proof the combine added to the ladder rather than shifting it, which
+is the one thing this step has got wrong before.
 
 ## Git on the NAS does not work -- read before typing any command here
 
@@ -772,6 +874,133 @@ never before. Re-run `app plan` afterwards -- the queue order is the point.
   different populations. That is what the clips column is for.
 
 ---
+
+## Session 13 (2026-09-08): the TV ladder lands, minus two clips
+
+**Nothing was encoded, moved or deleted.** The session read a benchmark that
+had already run, excluded two clips, rewrote `profiles.yaml` and re-planned.
+
+**What ran overnight:** both TV runs, clean, `rc=0` each -- 50 measurements
+under `463c62b871a9` (1080p, 21:01-02:24) and 60 under `0e0a06fba2be` (720p +
+sd, 02:24-04:34). See "The TV ladder ran, and two clips had to be thrown out"
+above for the two poisoned clips and why the existing guard missed them.
+
+### The ladder that is now live
+
+```
+encoder      content  res     target  setting            size    fps   clips
+hevc_vaapi   movie    1080p       95  qp=19               40%   33.1   5 (1 aside)
+hevc_vaapi   tv       1080p       92  qp=23               33%   30.2   4
+hevc_vaapi   tv       720p        92  qp=28               47%   54.3   3
+hevc_vaapi   tv       sd          92  qp=22               79%   87.6   2
+hevc_qsv     movie    1080p       95  global_quality=20   22%   23.2   3 (3 aside)
+hevc_qsv     tv       1080p       92  global_quality=23   24%   25.6   2 (2 aside)
+hevc_qsv     tv       720p        92  global_quality=27   47%   45.5   3
+hevc_qsv     tv       sd          92  global_quality=22   57%   89.2   1 (1 aside)
+```
+
+`hw_decode` was carried forward from the existing file, as designed.
+
+**The rungs landed coarser than the contaminated ones, as predicted.** Old
+(pre-Session-11 VMAF bug): 1080p qp 22, 720p qp 24, sd qp 24. New: qp 23, 28,
+22. The 720p rung moved four whole steps -- that is the measurement fix
+showing up as savings.
+
+**`hevc_vaapi` beats `hevc_qsv` on TV as it did on movies.** At 1080p vaapi
+satisfied all 4 clips; qsv set aside Fringe (ceiling 92.0) and The Last Kingdom
+(ceiling 89.6) as unreachable and built its rung from the remaining two.
+
+**`preferred_encoder` came out as `hevc_vaapi` without a hand-pin, and that is
+luck, not a fix.** With TV rungs restored each encoder holds four rungs, so
+`max(set(hardware), key=hardware.count)` in `bench/ladder.py:main` was breaking
+a 4-4 tie on set iteration order. **Check that line after every write.** A real
+fix would break the tie on clips satisfied or measured fps, both of which say
+vaapi.
+
+### `bench.ladder --exclude-clip` (new)
+
+`bench.ladder` could combine runs but could not drop a clip, and
+`_drop_broken_clips` only catches clips that *inflate* while scoring low. Doctor
+Who shrank normally while scoring 47, so it walked straight through the guard
+and set the sd rung.
+
+```sh
+bench.ladder --run-id A B C --robust --exclude-clip <clip_name> [<clip_name> ...]
+```
+
+Filters before anything is derived, prints what it dropped and how many rows,
+and **returns 2 with the list of measured clip names if a name matches
+nothing** -- a typo must not silently derive the ladder from everything. The
+rows stay in `bench_result`; this excludes them from the rebuild only. Two
+tests in `tests/test_ladder.py::TestRebuildFromStoredRuns`. Suite is **361
+tests**, up from 359.
+
+**It is not in the deployed image.** It was run via a bind mount over the baked
+file (below), so `/app/bench/ladder.py` inside `vidsmasharr:latest` is still
+the unpatched version. Push and rebuild before relying on the flag there.
+
+### Running changed code on the NAS without a rebuild
+
+The image bakes the source in, so the documented deploy is push -> `curl` ->
+`docker compose build`. **For a one-off run, mount over the baked file
+instead** -- no push, no rebuild, no change to the repo tree:
+
+```sh
+# get the file there first: scp does NOT work, DSM has no sftp subsystem
+#   scp: "subsystem request failed on channel 0"
+cat bench/ladder.py | ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179   'cat > ~/ladder-exclude.py && md5sum ~/ladder-exclude.py'
+
+sudo -n /usr/local/bin/docker compose -f .../docker-compose.yml run --rm   -v /var/services/homes/BrettGreg/ladder-exclude.py:/app/bench/ladder.py:ro   vidsmasharr bench.ladder ...
+```
+
+Checksum both ends before running it -- that is the only thing proving the box
+is executing what you wrote. `scp -O` may also work; the `cat | ssh` pipe is
+what was actually verified here. The patched file is still at
+`~/ladder-exclude.py` on the NAS.
+
+**A related trap, paid for in this session:** `sudo` on this box is scoped to
+docker only, so `sudo cp`, `sudo ls` and `sudo find` all fail with "a password
+is required". Anything needing root on a mounted path has to go through a
+container: `docker compose run --rm --entrypoint sh vidsmasharr -c "..."` is
+how `/config` was backed up and read.
+
+### `app plan` after the rebuild
+
+| | 2026-09-06 (movie ladder only) | 2026-09-08 |
+|---|---|---|
+| queued | 559 (403 encode, 156 remux) | **4,939** (4,935 encode, 4 downscale) |
+| reclaimable | 1,704 GB | **6,221 GB** |
+| encode-hours | 542 | **2,814** (352 nights at 8h) |
+| no ladder rung | 6,701 | **612** |
+
+Not queued, because: 12,238 below the minimum source size; 2,225 protected
+(HDR/DV/10-bit); 1,125 saving below the floor; 652 already at a low bitrate;
+626 waiting on a duplicate decision; 612 no ladder rung; 217 already an
+efficient codec. Plus 653 deferred by the per-title cap.
+
+**The remux tier went to zero queued, and that is a real trade, not a bug.**
+It was 156. Those TV files had no rung, so policy fell back to remux; with a
+rung they are encode candidates now. That moves ~156 files out of the tier that
+is **24x cheaper per GB** and into the 2,814-hour one. If that is not wanted,
+it is a policy question, not a ladder one.
+
+### Left open
+
+1. **The sd tier is thin and barely worth encoding.** `hevc_vaapi` sd is **79%
+   of source** off two clips, one of which (Buffy) qsv could not get past a
+   92.0 ceiling. Consider dropping sd from the encode policy entirely rather
+   than spending hours for 21%.
+2. **The mpeg4/DivX sd population -- 2,447 files -- is still unmeasured.** The
+   one clip chosen to represent it is the one that failed. A rung derived
+   without it does not describe those files. `hevc_vaapi` could not encode a
+   `516x570` source at all, which is worth knowing before the planner tries it
+   4,935 times.
+3. **Fix the `preferred_encoder` tie-break**, or keep re-pinning by hand.
+4. **`bench/ladder.py` is not deployed** -- see above.
+5. **Fix `run-tv-bench.sh`'s run_id grep** so a future run reports its own ids.
+
+---
+
 
 ## Session 12 (2026-09-06): the movie ladder lands, and the run's own file lies about it
 
