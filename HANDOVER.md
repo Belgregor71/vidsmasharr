@@ -1,4 +1,4 @@
-# Handover — sessions 1–13 (2026-08-27 → 09-08)
+# Handover — sessions 1–13 (2026-08-27 → 09-09)
 
 Read this first. It records what is *verified* on the real hardware versus what
 is still assumed, so tomorrow doesn't re-litigate settled decisions or trust
@@ -7,6 +7,20 @@ unverified ones.
 ---
 
 ## NEXT SESSION: start here
+
+**SOMETHING IS RUNNING. `~/resume-batch.sh` is encoding the first eight files
+on the NAS**, under `setsid`, logging to `~/encode-first8.log`. It retries every
+15 minutes for up to 12 hours. **`safety.delete_original_on_success` is FALSE**
+for the duration -- outputs are held in `/scratch/encoding` and no original has
+been touched. Check it before anything else:
+
+```sh
+ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179 'grep -c "done: .* saved" ~/encode-first8.log; tail -20 ~/encode-first8.log'
+```
+
+**Read "Session 13, part 2" below before drawing any conclusion from the plan's
+numbers** -- the first real encode beat its size estimate by 5x, and the reason
+generalises to the whole queue.
 
 **The TV ladder ran overnight on 2026-09-07 and is live.** `app plan` queues
 **4,939 jobs, 6,237 GB over 2,602 encode-hours**. **The sd tier is passed on
@@ -73,7 +87,7 @@ ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179   'sudo -n /usr/local/bin/doc
 It should report 23,287 files and **213 outcomes** (confirmed 2026-09-06). If
 it does not, read Session 12 before touching anything.
 
-### State at a glance (2026-09-08 05:30)
+### State at a glance (2026-09-09 16:10)
 
 | | where it stands |
 |---|---|
@@ -91,11 +105,11 @@ it does not, read Session 12 before touching anything.
 | **Remux tier** | **COMPLETE AND CLOSED 2026-09-03.** 212 outcomes, **447 GB reclaimed**, 0 quarantined, 0 failed, 4 left pending behind encodes (blocked on the movie ladder) |
 | The 6 quarantined | **RESOLVED AND INSTALLED 2026-09-03.** Re-run produced outputs byte-size-identical to the first run's, all six -- proof the files were never broken and only the verifier was. 10.48 GiB reclaimed, originals deleted, Radarr rescanned all six. See Session 10 |
 | Estimator | Savings **0.995x** over the full tier -- essentially exact. CPU **2.16x** overnight, but **1.12x** on an idle box: the multiplier is mostly contention, not the files. See Session 10 |
-| Encode tier | **NOT STARTED. Fully planned.** `app plan` 2026-09-08: **4,939 queued (4,935 encode, 4 downscale), 6,237 GB over 2,602 encode-hours, 325 nights at 8h.** The 156 remux jobs are gone -- those TV files had no rung and fell back to remux; with a rung they are encodes now, which moves them out of the 24x-cheaper tier |
-| Outcomes recorded | **213 -- but still only 1 is an encode.** `app calibrate` needs 8 *per model*; 212 are `stream-copy` remuxes with no encoder and no VMAF. **Seven more encodes**, not seven more files |
+| Encode tier | **STARTED 2026-09-08.** First batch of 8 running under `~/resume-batch.sh`; 1 done at the time of writing (Black Bag, VMAF 95.3, **22.04 GB saved against a 13.95 GB estimate**), job 2 in flight. Nothing installed, nothing deleted. `app plan` 2026-09-08: **4,939 queued (4,935 encode, 4 downscale), 6,237 GB over 2,602 encode-hours, 325 nights at 8h.** The 156 remux jobs are gone -- those TV files had no rung and fell back to remux; with a rung they are encodes now, which moves them out of the 24x-cheaper tier |
+| Outcomes recorded | **214, of which 2 are encodes.** `app calibrate` needs 8 *per model*, and the running batch is what gets there. Do not run `app calibrate` before the batch finishes -- it will fit a model to two points |
 | Playback on TV | **PASSED 2026-08-31** on the first three files, and **PASSED 2026-09-03** on two of the six re-runs (Wicked For Good, A Big Bold Beautiful Journey) -- the ending and the DTS-HD MA downmix, the two things at risk. See Session 10 for the trick that gets a scratch file onto a TV |
-| Next action | **Start the encode tier** -- 4,935 encodes are queued and the first 8 give `app calibrate` its model. Nothing is blocking it any more |
-| Media library | **REWRITTEN IN PLACE.** 212 files replaced, originals deleted, 451.8 GB reclaimed in total. `delete_original_on_success` **true**, `max_deletes_per_run` **50** |
+| Next action | **Wait for the batch, then watch two outputs on the TVs, then `app calibrate`, then re-plan.** Only after that: `delete_original_on_success: true` and `app work --install-held`. See Session 13, part 2 |
+| Media library | **REWRITTEN IN PLACE** by the remux tier only. 212 files replaced, originals deleted, 451.8 GB reclaimed in total. **No encode has touched the library** -- the first batch is held in scratch. `delete_original_on_success` **true**, `max_deletes_per_run` **50** |
 | Disk | **4.2 TB free (`df`), 86% used.** The whole remux tier moved this under 2% -- the space is in the encode tier |
 
 ---
@@ -879,6 +893,106 @@ never before. Re-run `app plan` afterwards -- the queue order is the point.
 
 ---
 
+## Session 13, part 2 (2026-09-09): the first real encode, and what it says about every estimate in the plan
+
+**The encode tier is started.** Eight files, `delete_original_on_success` set
+to **false** first so the outputs are held in `/scratch/encoding` for review
+rather than replacing anything. Config backed up to
+`config.yaml.bak-2026-09-08-before-first-batch`. **Turn it back on when the
+batch has been watched** -- until then `app work --install-held` is the only
+thing that installs anything.
+
+Eight is not arbitrary: `app calibrate` needs **8 outcomes per model** and the
+tier had exactly one encode in it.
+
+### Job 1: it passed, and it beat its estimate by five times
+
+| | estimate | actual |
+|---|---|---|
+| output size | 9.90 GB (40% of source) | **1.95 GB (8.2%)** |
+| saved | 13.95 GB | **22.04 GB** |
+| elapsed | 1.1 h | 1.16 h |
+| VMAF | target 95.0 | **95.3** |
+
+`Black Bag (2025)`, 23.85 GB, **35.9 Mbps h264** -- an exceptionally fat
+Bluray. Output ~2.3 Mbps of video plus 640k audio over a 93-minute film.
+
+**The speed model is right and the size model is wrong in shape.** `qp 19`
+targets a *quality*: it emits whatever bitrate that content needs, largely
+independent of what it was fed. The calibration clips were 8-11 Mbps sources,
+which at qp 19 land near 3.3 Mbps -- **40% is a true ratio for those clips and
+meaningless for a source three times fatter.** A constant size *ratio* is the
+wrong model for a library whose sources span 1 to 36 Mbps.
+
+**The ladder knows how to model this properly and cannot, for a stated
+reason.** `LadderEntry.expected_out_bitrate` is exactly the right quantity, and
+it is `null` on every rung in the live file. `load_measurements` says why:
+`src_fps` is not stored in `bench_result`, so a rebuild cannot recompute it and
+the planner falls back to the ratio. **Every rung written this week came from a
+rebuild.** Storing `src_fps` in `bench_result` would fix this at the root.
+
+**Two consequences, both of which point the same way:**
+
+1. **6,237 GB is a floor, not a forecast.** The fatter the source, the further
+   it beats its estimate, and the fat sources are the ones worth doing.
+2. **The queue's GB-per-encode-hour ranking is distorted against the fattest
+   files** -- the best jobs are ranked as though merely average. The
+   "stop around halfway" table in part 1 is conservative in the direction of
+   encoding more.
+
+`app calibrate` is built to correct exactly this from real outcomes rather than
+clip extrapolation. **Re-plan after it**, and expect the numbers to move.
+
+**One thing the numbers cannot settle.** Verification sampled 3 x 20s out of 93
+minutes (`quality.vmaf_sample_count: 3`, `vmaf_sample_seconds: 20`). VMAF 95.3
+on those samples is strong, but 36 Mbps -> 2.3 Mbps is a long fall, and grain
+and fast motion are where a sampled score flatters an encode. **Watch one
+before trusting the tier.**
+
+### `app work` exits when someone watches television
+
+**This cost a whole night and is the highest-value fix outstanding.** Job 1
+finished at 19:50 on 2026-09-08, the log says:
+
+```
+stopped:   Tautulli reports 1 active stream(s)
+```
+
+and then nothing until 16:00 the next day. `app work` **exits** on a stream
+rather than waiting for it to clear, so the 22:00-07:00 window -- the entire
+operating model of this project -- went unused because someone was watching TV
+at eight in the evening.
+
+**Patched from the outside, not fixed.** `~/resume-batch.sh` retries every 15
+minutes until 8 encodes have succeeded, up to 48 attempts:
+
+```sh
+setsid nohup ~/resume-batch.sh > ~/resume-batch.out 2>&1 < /dev/null &
+```
+
+It counts `done: .* saved` lines in the log and asks for exactly the shortfall,
+so it cannot overshoot the eight. **The real fix belongs in `worker.run`:**
+pause and poll while a stream is active, resume when it clears, and only exit
+when the window closes or the queue empties. Until that exists, no unattended
+overnight run can be trusted to have used its window.
+
+### When the batch finishes
+
+1. **Check all eight passed** -- `grep "done: .* saved" ~/encode-first8.log`.
+   A verification failure means the rung is wrong, not the file.
+2. **Watch two of them on the TVs** from `/scratch/encoding` (Session 10 has
+   the trick for getting a scratch file in front of a TV). Confirm Direct Play
+   and look at grain and motion, not just the still image.
+3. **`app calibrate`** -- 8 encode outcomes is the threshold, and it replaces
+   the ratio guesswork with measurement.
+4. **`app plan`** again. Expect more GB and a different order.
+5. Only then: `delete_original_on_success: true` and
+   **`app work --install-held`**, which installs what is already encoded and
+   verified without spending the CPU twice.
+
+---
+
+
 ## Session 13 (2026-09-08): the TV ladder lands, minus two clips
 
 **Nothing was encoded, moved or deleted.** The session read a benchmark that
@@ -1135,18 +1249,25 @@ Those 83 are the genuinely uncalibrated leftovers. The 783 now say why.
 
 ### Left open
 
-1. **The mpeg4/DivX sd population -- 2,447 files -- was never measured**, and
+1. **Make `worker.run` wait for a stream instead of exiting.** The highest-value
+   fix in the file: it is what makes an unattended night actually use its
+   window. See Session 13, part 2.
+2. **Store `src_fps` in `bench_result`** so `expected_out_bitrate` survives a
+   rebuild. Until then every rung models savings as a constant size ratio,
+   which is wrong for any source far from the calibration clips' bitrate --
+   the first real encode beat its estimate by 5x on exactly this.
+3. **The mpeg4/DivX sd population -- 2,447 files -- was never measured**, and
    with sd passed it never needs to be. Recorded because `hevc_vaapi` could not
    encode a `516x570` source *at all*: if sd is ever brought back, that is a
    capability gap, not a tuning problem.
-2. **Fix the `preferred_encoder` tie-break.** **Four** wrong picks in three
+4. **Fix the `preferred_encoder` tie-break.** **Four** wrong picks in three
    sessions -- it picked `hevc_qsv` twice more in this session alone, once at
    three rungs each and once at four. Break on clips satisfied or measured fps,
    not rung count. Until then, check `head -3 /config/profiles.yaml` after
    every single write.
-3. **Fix `run-tv-bench.sh`'s run_id grep** so a future run reports its own ids.
-4. **Start the encode tier.** Nothing is blocking it: 4,935 encodes queued,
-   6,237 GB, and the first 8 give `app calibrate` its model.
+5. **Fix `run-tv-bench.sh`'s run_id grep** so a future run reports its own ids.
+6. ~~**Start the encode tier.**~~ **Started 2026-09-08** -- first batch of 8 in
+   flight, held in scratch, nothing installed.
 
 ---
 
