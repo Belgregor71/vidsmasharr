@@ -127,6 +127,38 @@ def install(
         return InstallResult(ok=False, error=f"install failed: {exc}")
 
 
+def copy_for_review(output: Path, review_dir: Path) -> Path | None:
+    """Put a copy of a held output where it can be watched.
+
+    Scratch is readable only by root, so a held output cannot be opened from a
+    TV or a desktop. The copy goes next to nothing in the library -- it is a
+    second file, not an install -- and takes the review folder's owner, so
+    whoever manages that folder can delete it. Returns None if it failed.
+    """
+    if not output.exists():
+        return None
+
+    final = review_dir / output.name
+    temp = final.with_name(final.name + TEMP_SUFFIX)
+    try:
+        review_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(output, temp)
+        os.replace(temp, final)
+        if hasattr(os, "chown"):  # not on Windows, where the tests also run
+            owner = review_dir.stat()
+            try:
+                os.chown(final, owner.st_uid, owner.st_gid)
+            except OSError:
+                pass
+        return final
+    except OSError:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+
 def quarantine(output: Path, scratch_dir: Path, reason: str) -> Path | None:
     """Keep a failed output where it can be looked at, with the reason beside it.
 

@@ -138,6 +138,11 @@ safety:
   # Leave FALSE until a first batch has been watched on both TVs. While false
   # the worker encodes and verifies but never removes the original.
   delete_original_on_success: false
+  # While originals are kept, copy each held output here so it can be watched
+  # -- scratch is root-only. Container path. Removed again on --install-held.
+  # review_dir: /media/vidsmasharr-test
+  # ...and stop starting encodes once this many are waiting to be watched.
+  # max_held: 20
   max_deletes_per_run: 50
   # Leave TRUE until you have read a dry-run plan and agree with it.
   dry_run: true

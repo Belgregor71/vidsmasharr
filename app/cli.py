@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 from app.config import Config, load_config
@@ -40,10 +42,15 @@ def _header(text: str) -> None:
     print("=" * 72)
 
 
-def _load(args) -> tuple[Config, Database]:
+def _config(args) -> Config:
     config = load_config(Path(args.config) if args.config else None)
     if args.libraries:
         config.libraries = [Path(p) for p in args.libraries]
+    return config
+
+
+def _load(args) -> tuple[Config, Database]:
+    config = _config(args)
     db = Database(Path(args.db) if args.db else config.db_path)
     return config, db
 
@@ -199,6 +206,13 @@ def cmd_work(args) -> int:
         print(stats.summary())
         return 0 if not stats.failed else 1
 
+    if args.forever:
+        if config.safety.dry_run and not args.execute:
+            print("  --forever needs --execute: an always-on dry run would print "
+                  "the same commands every five minutes.")
+            return 2
+        return _work_forever(args, db)
+
     pending = db.scalar("SELECT COUNT(*) FROM decision WHERE state='pending'") or 0
     if not pending:
         held = db.scalar("SELECT COUNT(*) FROM decision WHERE state='held'") or 0
@@ -218,10 +232,12 @@ def cmd_work(args) -> int:
             print("  Originals WILL be deleted after verification passes.\n")
         else:
             print("  Originals will be kept; outputs stay in scratch for review.")
+            if config.safety.review_dir:
+                print(f"  A copy of each goes to {config.safety.review_dir} to watch.")
             print("  Turn on safety.delete_original_on_success when you are happy.\n")
 
     window = schedule.may_work_now(config)
-    if not window.working and not args.now:
+    if not window.working and not window.paused and not args.now:
         print(f"  Not working right now: {window.reason}.")
         print("  Pass --now to override the schedule.")
         return 0
@@ -231,11 +247,70 @@ def cmd_work(args) -> int:
         limit=args.limit,
         execute=args.execute,
         ignore_schedule=args.now,
+        wait_for_streams=True,
         progress=print,
     )
     print()
     print(stats.summary())
     return 0 if stats.failed == 0 else 1
+
+
+# How long the always-on worker sleeps when a run ends: window shut, queue
+# empty, review cap reached, or a hand-typed `app work` holding the lock.
+FOREVER_IDLE_S = 300
+
+
+def _stamped(message: str) -> None:
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for line in message.splitlines():
+        print(f"[{now}] {line}" if line.strip() else "", flush=True)
+
+
+def _work_forever(args, db: Database) -> int:
+    """`app work --execute --forever`: the vidsmasharr-worker container.
+
+    Runs whenever the schedule allows and waits out streams inside the run.
+    When a run ends it sleeps and tries again, so the night window starts
+    itself. Config is re-read before every job, so edits need no restart. A
+    stop reason is logged once, not every five minutes.
+
+    The delete ceiling is per run, and this would start a fresh run five
+    minutes after hitting it. So hitting it stops the worker until tomorrow.
+    """
+    config = _config(args)
+    _stamped(
+        f"  worker up. schedule: nights {config.schedule.night_start}-"
+        f"{config.schedule.night_end}, days {'on' if config.schedule.day_enabled else 'off'}. "
+        f"originals: {'DELETED' if config.safety.delete_original_on_success else 'kept'}"
+        f", review cap {config.safety.max_held or 'none'}"
+    )
+    last_reason = None
+    ceiling_hit_on = None
+    while True:
+        today = datetime.now().date()
+        if ceiling_hit_on == today:
+            time.sleep(FOREVER_IDLE_S)
+            continue
+
+        try:
+            config = _config(args)
+        except Exception as exc:  # keep the last good config over a bad edit
+            _stamped(f"  config reload failed, keeping the old one: {exc}")
+        stats = worker.run(
+            db, config,
+            execute=args.execute,
+            wait_for_streams=True,
+            reload=lambda: _config(args),
+            progress=_stamped,
+        )
+        if stats.attempted:
+            _stamped(stats.summary())
+        if stats.hit_delete_ceiling:
+            ceiling_hit_on = today
+        if stats.stopped_because != last_reason:
+            _stamped(f"  idle: {stats.stopped_because}")
+            last_reason = stats.stopped_because
+        time.sleep(FOREVER_IDLE_S)
 
 
 def cmd_arr_guard(args) -> int:
@@ -537,6 +612,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="put previously failed decisions back in the queue")
     work.add_argument("--install-held", action="store_true",
                       help="install outputs already encoded and verified in scratch")
+    work.add_argument("--forever", action="store_true",
+                      help="never exit: work whenever the schedule allows and "
+                           "sleep otherwise. The worker container's command")
     work.set_defaults(func=cmd_work)
 
     guard = sub.add_parser(

@@ -100,6 +100,7 @@ class ScheduleConfig(BaseModel):
     # Suspend encoding entirely while someone is actually watching, so we do not
     # contend for /dev/dri and the disks with a live Plex stream.
     pause_when_streaming: bool = True
+    # While paused for a stream, how often to ask Tautulli whether it has ended.
     plex_poll_seconds: int = 30
 
 
@@ -146,6 +147,16 @@ class SafetyConfig(BaseModel):
     # Master switch. While False the worker encodes and verifies but leaves the
     # original in place, so a first batch can be eyeballed on the TVs.
     delete_original_on_success: bool = False
+    # Where a copy of each held output goes to be watched, e.g.
+    # /media/vidsmasharr-test. Scratch is invisible to the NAS login user and
+    # to Plex, so without this a trial batch cannot be looked at. A copy, not
+    # a move: `install_held` installs from scratch, and removes the copy then.
+    review_dir: Path | None = None
+    # While originals are kept, stop starting encodes once this many outputs
+    # are waiting to be watched and installed. An always-on worker in review
+    # mode otherwise adds a night's output to the pile every night, unwatched.
+    # None = no cap.
+    max_held: int | None = None
     # Absolute ceiling on damage from a runaway loop.
     max_deletes_per_run: int = 50
     dry_run: bool = True

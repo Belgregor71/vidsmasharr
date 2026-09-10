@@ -224,6 +224,26 @@ class TestInstall:
         assert not (tmp_path / "show.mkv").exists()
 
 
+class TestReviewCopy:
+    def test_a_held_output_is_copied_and_the_scratch_file_stays(self, tmp_path):
+        """A copy, not a move: `install_held` installs from the scratch path
+        on the job row, and treats a missing file as needing a re-encode."""
+        output = tmp_path / "scratch" / "show.mkv"
+        output.parent.mkdir()
+        output.write_bytes(b"encoded")
+        review = tmp_path / "media" / "vidsmasharr-test"
+
+        copy = swap.copy_for_review(output, review)
+
+        assert copy == review / "show.mkv"
+        assert copy.read_bytes() == b"encoded"
+        assert output.read_bytes() == b"encoded"
+        assert not list(review.glob("*" + swap.TEMP_SUFFIX))
+
+    def test_a_missing_output_copies_nothing(self, tmp_path):
+        assert swap.copy_for_review(tmp_path / "gone.mkv", tmp_path / "review") is None
+
+
 class TestQuarantine:
     def test_a_failed_output_is_kept_with_its_reason(self, tmp_path):
         output = tmp_path / "bad.mkv"
@@ -684,6 +704,130 @@ class TestNowStillYieldsToStreams:
         assert stats.attempted == 1
 
 
+def add_held(db, tmp_path, name="held.mkv"):
+    """A second file whose output is encoded and waiting for review."""
+    now = time.time()
+    db.execute(
+        "INSERT INTO media_file (path, library_root, size_bytes, mtime, probe_version, "
+        "probed_at, container, duration_s, v_codec, v_bit_depth, v_width, v_height, "
+        "v_bitrate, v_fps, hdr_type, audio_json, first_seen, last_seen, missing) "
+        "VALUES (?,?,4096,0,1,?,'matroska,webm',2700.0,'h264',8,1920,1080,8000000,"
+        "24.0,'sdr','[]',?,?,0)",
+        (str(tmp_path / "media" / name), str(tmp_path / "media"), now, now, now),
+    )
+    db.execute(
+        "INSERT INTO decision (file_id, action, reason, priority, state, created_at) "
+        "VALUES (?, 'encode', 'because', 1.0, 'held', ?)",
+        (db.scalar("SELECT last_insert_rowid()"), now),
+    )
+
+
+class TestWaitingOutAStream:
+    """The run waits for a stream to end rather than ending with it.
+
+    On 2026-09-08 job 1 finished at 19:50, someone was watching, `app work`
+    exited, and the whole 22:00-07:00 window went unused.
+    """
+
+    @pytest.fixture
+    def naps(self, monkeypatch):
+        taken = []
+        monkeypatch.setattr(worker, "_sleep", taken.append)
+        return taken
+
+    def test_a_stream_is_waited_out_and_work_resumes(
+        self, db, config, tmp_path, monkeypatch, naps
+    ):
+        seed_job(db, tmp_path)
+        monkeypatch.setattr(worker, "probe", lambda p, f: fake_info())
+        streams = iter([1, 1, 0])
+        monkeypatch.setattr(schedule, "tautulli_streams", lambda c: next(streams, 0))
+
+        stats = worker.run(
+            db, config, ignore_schedule=True, wait_for_streams=True, limit=1,
+            progress=None,
+        )
+
+        assert stats.attempted == 1
+        assert naps == [config.schedule.plex_poll_seconds] * 2
+
+    def test_a_closed_window_still_ends_the_run(
+        self, db, config, tmp_path, monkeypatch, naps
+    ):
+        """A stream ends within the hour. A shut window does not, and waiting
+        on one would hold the lock all day."""
+        seed_job(db, tmp_path)
+        windows = iter([
+            schedule.WorkWindow(False, 0, 0, "1 active stream(s)", paused=True),
+            schedule.WorkWindow(False, 0, 0, "outside the night window"),
+        ])
+        monkeypatch.setattr(schedule, "may_work_now", lambda c: next(windows))
+
+        stats = worker.run(db, config, wait_for_streams=True, progress=None)
+
+        assert stats.attempted == 0
+        assert stats.stopped_because == "outside the night window"
+        assert len(naps) == 1
+
+    def test_a_bad_config_reload_keeps_the_old_config(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        """A config.yaml saved half-way through an edit must not kill a night."""
+        seed_job(db, tmp_path)
+        monkeypatch.setattr(worker, "probe", lambda p, f: fake_info())
+        monkeypatch.setattr(schedule, "tautulli_streams", lambda c: 0)
+
+        def broken():
+            raise ValueError("mapping values are not allowed here")
+
+        stats = worker.run(
+            db, config, ignore_schedule=True, limit=1, reload=broken, progress=None
+        )
+
+        assert stats.attempted == 1
+
+
+class TestAlwaysOnGuards:
+    def test_the_review_cap_stops_new_encodes(self, db, config, tmp_path, monkeypatch):
+        seed_job(db, tmp_path)
+        add_held(db, tmp_path)
+        config.safety.max_held = 1
+        monkeypatch.setattr(schedule, "tautulli_streams", lambda c: 0)
+
+        stats = worker.run(db, config, execute=True, ignore_schedule=True, progress=None)
+
+        assert stats.attempted == 0
+        assert "1 output(s) are waiting for review" in stats.stopped_because
+
+    def test_the_review_cap_is_moot_once_originals_are_replaced(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        """With deletion on nothing is held, so a leftover count must not
+        block the queue."""
+        seed_job(db, tmp_path)
+        add_held(db, tmp_path)
+        config.safety.max_held = 1
+        config.safety.delete_original_on_success = True
+        monkeypatch.setattr(worker, "probe", lambda p, f: fake_info())
+        monkeypatch.setattr(schedule, "tautulli_streams", lambda c: 0)
+
+        stats = worker.run(db, config, ignore_schedule=True, limit=1, progress=None)
+
+        assert stats.attempted == 1
+
+    def test_a_second_worker_is_refused(self, db, config, tmp_path, monkeypatch):
+        """Its reclaim_stale would hand the first worker's live job out again."""
+        seed_job(db, tmp_path)
+        db.execute("UPDATE decision SET state='running'")
+        monkeypatch.setattr(worker, "_acquire_lock", lambda c: None)
+
+        stats = worker.run(db, config, ignore_schedule=True, progress=None)
+
+        assert stats.attempted == 0
+        assert "another worker" in stats.stopped_because
+        assert db.scalar("SELECT state FROM decision") == "running"
+
+
 class TestDryRun:
     def test_a_dry_run_reports_a_problem_without_recording_it(
         self, db, config, tmp_path, monkeypatch
@@ -887,6 +1031,59 @@ class TestTheRecordItLeaves:
         # The encode's own measurements survive the install untouched.
         assert row["cpu_seconds"] == 1234.0
         assert row["vmaf_mean"] == 94.5
+
+    def test_a_held_output_is_copied_to_the_review_dir(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        review = tmp_path / "media" / "vidsmasharr-test"
+        config.safety.review_dir = review
+        copied = []
+        monkeypatch.setattr(
+            swap, "copy_for_review",
+            lambda output, where: copied.append((output, where)) or where / output.name,
+        )
+
+        result = self.succeed(db, config, tmp_path, monkeypatch, delete=False)
+
+        assert len(copied) == 1
+        assert copied[0][1] == review
+        assert "copy to watch at" in result.note
+
+    def test_nothing_is_copied_for_review_once_originals_are_replaced(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        config.safety.review_dir = tmp_path / "review"
+        copied = []
+        monkeypatch.setattr(
+            swap, "copy_for_review", lambda *a: copied.append(a) or None
+        )
+
+        self.succeed(db, config, tmp_path, monkeypatch, delete=True)
+
+        assert copied == []
+
+    def test_installing_a_held_output_removes_its_review_copy(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        review = tmp_path / "review"
+        self.succeed(db, config, tmp_path, monkeypatch, delete=False)
+
+        config.safety.delete_original_on_success = True
+        config.safety.review_dir = review
+        monkeypatch.setattr(
+            verify, "check_structure",
+            lambda *a, **k: verify.Verification(ok=True, out_info=fake_info(size_bytes=1500)),
+        )
+        scratch = Path(db.scalar("SELECT scratch_path FROM job"))
+        scratch.parent.mkdir(parents=True, exist_ok=True)
+        scratch.write_bytes(b"0" * 1500)
+        review.mkdir()
+        (review / scratch.name).write_bytes(b"0" * 1500)
+
+        stats = worker.install_held(db, config, progress=None)
+
+        assert stats.succeeded == 1
+        assert not (review / scratch.name).exists()
 
     def test_the_arr_is_told_only_once_the_original_is_really_gone(
         self, db, config, tmp_path, monkeypatch

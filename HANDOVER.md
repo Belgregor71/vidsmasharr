@@ -1,4 +1,4 @@
-# Handover — sessions 1–13 (2026-08-27 → 09-09)
+# Handover — sessions 1–14 (2026-08-27 → 09-11)
 
 Read this first. It records what is *verified* on the real hardware versus what
 is still assumed, so tomorrow doesn't re-litigate settled decisions or trust
@@ -8,15 +8,26 @@ unverified ones.
 
 ## NEXT SESSION: start here
 
-**SOMETHING IS RUNNING. `~/resume-batch.sh` is encoding the first eight files
-on the NAS**, under `setsid`, logging to `~/encode-first8.log`. It retries every
-15 minutes for up to 12 hours. **`safety.delete_original_on_success` is FALSE**
-for the duration -- outputs are held in `/scratch/encoding` and no original has
-been touched. Check it before anything else:
+**THE WORKER IS ALWAYS ON.** Since 2026-09-11 06:04 the container
+`vidsmasharr-worker` runs `app work --execute --forever`: full speed 22:00-07:00,
+one niced thread by day, waiting out Plex streams, and restarting itself. The
+web UI is up too, at **http://192.168.0.179:8330**. Originals are **kept**:
+every output is held in scratch and copied to `vidsmasharr-test` to be watched,
+and the worker stops starting encodes once **20** are waiting. Check it before
+anything else:
 
 ```sh
-ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179 'grep -c "done: .* saved" ~/encode-first8.log; tail -20 ~/encode-first8.log'
+ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179 'sudo -n /usr/local/bin/docker logs --since 20h vidsmasharr-worker'
 ```
+
+**Stop the worker before any hand-typed `app work`, `--install-held` or
+`app plan`** -- `sudo -n /usr/local/bin/docker stop vidsmasharr-worker`, then
+`start` it after. Read **Session 14** for why each of the three needs it.
+
+**`app calibrate --apply` then `app plan` is the next job, and was skipped.**
+The first batch was installed without it. The size model has 9 encodes and
+over-predicts output size by 2.3x (`ladder-ratio` x0.43), so the queue is still
+ranked on the uncalibrated estimate. See Session 14.
 
 **Read "Session 13, part 2" below before drawing any conclusion from the plan's
 numbers** -- the first real encode beat its size estimate by 5x, and the reason
@@ -86,6 +97,21 @@ ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179   'sudo -n /usr/local/bin/doc
 
 It should report 23,287 files and **213 outcomes** (confirmed 2026-09-06). If
 it does not, read Session 12 before touching anything.
+
+### State at a glance (2026-09-11 06:30)
+
+Rows not restated here are unchanged from the 2026-09-09 table below.
+
+| | where it stands |
+|---|---|
+| Code | **378 tests.** Session 14's commit is on `main` and **deployed** -- tree and image md5-verified against the workstation 2026-09-11. Not pushed |
+| Worker | **`vidsmasharr-worker` UP since 2026-09-11 06:04**, `restart: unless-stopped`. First job on start: Failure Frame S01E03. Its log is the record of every night now; `~/resume-batch.sh` and `~/encode-*.log` are retired |
+| Web UI | **`vidsmasharr` UP since 2026-09-10** on :8330. It had never been left running before |
+| NAS `config.yaml` | `delete_original_on_success: false`, `review_dir: /media/vidsmasharr-test`, `max_held: 20`, `day_enabled: true` (kept on deliberately). Backups `config.yaml.bak-20260910`, `.bak-before-install-first8`, `.bak-before-worker` |
+| Encode tier | **First batch of 8 INSTALLED 2026-09-10**: 8/8 passed, **76.98 GB reclaimed**, originals deleted, Sonarr/Radarr rescanned. Watched on the TVs first. 4,931 pending |
+| Outcomes recorded | **221, of which 9 are encodes** (8 `hevc_vaapi:1080p`, 1 `hevc_qsv:1080p`). Enough for `app calibrate --apply`, which has NOT been run |
+| Media library | 8 encodes installed on top of the remux tier. Their filenames still say `h264`/`AVC` -- `app arr-rename` has not been run |
+| Next action | **Stop the worker, `app calibrate --apply`, `app plan`, start the worker.** Then watch the next batch in `vidsmasharr-test` and install it the same way |
 
 ### State at a glance (2026-09-09 16:10)
 
@@ -893,6 +919,147 @@ never before. Re-run `app plan` afterwards -- the queue order is the point.
 
 ---
 
+## Session 14 (2026-09-10 → 11): the first batch installed, and a worker that starts itself
+
+### The batch finished, and was installed
+
+`~/resume-batch.sh` wrote `BATCH LOOP DONE -- 8/8 encoded` at **22:14 on
+2026-09-09**. The stream bug hit twice more on the way -- at ~21:05 after five
+jobs, and the retry straight after it -- and cost about 15 minutes.
+
+| file | saved | VMAF |
+|---|---|---|
+| Black Bag | 22.04 GB | 95.3 |
+| The Legend of Ochi | 13.96 GB | **93.8** -- under the 95 target, over the 92 floor |
+| Over the Hedge | 13.15 GB | 96.7 |
+| Kung Fu Panda 3 | 13.47 GB | 97.7 |
+| Failure Frame x4 | 3.41-3.94 GB each | 94.7-95.6 |
+
+**76.98 GB from ~101 GB of source.** The seven from 09-09 were estimated at
+45.7 GB and saved 54.9 GB -- the size-estimate floor from Session 13, part 2,
+again. Ochi stays at 10.4 GB because its TrueHD Atmos 7.1 is copied untouched.
+
+All eight were **watched on the TVs by the user and passed**, then installed:
+`delete_original_on_success` set true, `app work --install-held`, set false
+again, all in one container run so a failure could not leave deletion on.
+8/8 installed, 8 originals deleted, Sonarr/Radarr rescanned each. Three
+library files ffprobed afterwards: `hevc`, byte sizes equal to the outputs.
+
+**Steps 3 and 4 of "When the batch finishes" were skipped** -- no
+`app calibrate`, no re-plan. Read-only `app calibrate` on 2026-09-11:
+
+```
+ladder-ratio       n=9    x0.43   predicted output size is over by 57%
+hevc_vaapi:1080p   n=8    x0.94   predicted encode time is over by 6%
+```
+
+Both now clear `MIN_SAMPLES = 8`. `--apply` then `app plan` is the next job.
+x0.43 is one factor over sources spanning 1-36 Mbps, so it corrects the
+average and not the shape -- `src_fps` in `bench_result` is still the real fix.
+
+### Outputs to watch go to `vidsmasharr-test`, automatically
+
+`/volume1/scratch` is root-only: the login user, SMB and Plex cannot see into
+it, so a held output could not be watched without a hand copy. The user's
+standing instruction is that **every test output goes to**
+`/volume1/data/media/vidsmasharr-test` (= `/media/vidsmasharr-test` in the
+container; `/volume1/@appdata/ContainerManager/all_shares/data/media/...` is
+the same btrfs subvolume, same inode). It is outside every Plex library.
+
+New `safety.review_dir` does it. When an output is held, `swap.copy_for_review`
+**copies** it there -- temp file then rename, chowned to the folder's owner
+(`docker:users`, 1028:100) so the user can delete it. **A copy, never a move:**
+`install_held` installs from `job.scratch_path` and re-queues a missing file for
+re-encode. `install_held` removes the copy after installing. Quarantined
+failures are not copied; do that by hand if one needs looking at.
+
+### The web UI was built in Phase 1 and never left running
+
+`docker compose up -d` on 2026-09-10; every page 200 from the workstation.
+**The banner "dry run · nothing is encoded or deleted" is misleading** -- it
+reads `safety.dry_run`, which stays `true` because every real run passes
+`--execute`. It should describe what the next run would do. The Duplicates
+page is the only one with controls; the user picked 10 keepers there on
+2026-09-10 (records a choice, moves nothing).
+
+### Fix 1: the worker waits out a stream
+
+`schedule.WorkWindow` has a new `paused` field -- "not working, but only
+because someone is watching". `worker.run(wait_for_streams=True)` sleeps
+`schedule.plex_poll_seconds` (30s; the setting existed and nothing read it) and
+asks again, logging `paused:` once and `resumed after N min`. A closed window
+still ends the run. `cmd_work`'s pre-flight check had the same bug -- it
+returned on a stream before the loop ever ran -- and now only returns for a
+closed window. `app work` from the CLI always waits; `wait_for_streams`
+defaults off in `run()` so the older tests keep their meaning.
+
+**Not yet seen against a real stream.** The first evening someone watches
+Plex, the worker log should show a `paused:` / `resumed after` pair.
+
+### Fix 2: `vidsmasharr-worker`, always on
+
+A second compose service, same image, sharing devices, `group_add`,
+environment and volumes with the web service through YAML anchors so a gid
+change cannot miss one of them. `command: app work --execute --forever`.
+
+- **`--forever`** loops: `worker.run`, sleep 300s, again. A run ends when the
+  window shuts, the queue empties, the review cap is hit or the lock is held;
+  each distinct reason is logged once as `idle:`. Lines are timestamped.
+  `--forever` without `--execute` refuses, rather than dry-running every five
+  minutes.
+- **`day_enabled: true` was kept by the user's choice**, so in practice the
+  window never closes -- it drops to one niced thread at 07:00, and keepers
+  (software x265) still only start at night.
+- **Config is re-read before every job** (`run(reload=...)`), so an edit takes
+  effect without a restart. A reload that fails -- a half-saved YAML -- logs
+  and keeps the last good config.
+- **`safety.max_held: 20`** (user's choice; `None` = no cap). While originals
+  are kept the worker stops starting encodes once 20 outputs wait for review,
+  about three nights' worth. It does not apply once deletion is on.
+- **`flock` on `/config/worker.lock`.** A second worker's `reclaim_stale` would
+  mark the first one's live job interrupted and hand it out again. Verified on
+  the NAS from a second container: the lock is refused while the worker runs.
+  A hand-typed `app work` now stops with "another worker is already running".
+- **The delete ceiling is per run**, and `--forever` would start a new run five
+  minutes after hitting it, so hitting it parks the worker until tomorrow.
+- **Tautulli and Plex both unreachable pauses indefinitely.** That is the
+  existing "cannot tell means someone is watching" rule, not a hang.
+
+### Stop the worker for these, and why
+
+| command | why |
+|---|---|
+| `app work` by hand | refused by the lock anyway |
+| `app work --install-held` | takes no lock, but needs `delete_original_on_success: true` for a moment, and the worker re-reads config before each job -- a job starting then deletes an original nobody watched |
+| `app plan` | the planner keeps `running`/`held` rows, so this is mostly safe; stopping closes a narrow race where the worker takes a `pending` row the planner is replacing |
+
+```sh
+sudo -n /usr/local/bin/docker stop vidsmasharr-worker   # a running job is reclaimed on start
+sudo -n /usr/local/bin/docker start vidsmasharr-worker
+```
+
+### Deployed
+
+`app/{cli,config}.py`, `app/work/{schedule,swap,worker}.py`,
+`tests/test_work.py`, `docker/docker-compose.yml` -- `cat | ssh` into the tree,
+image rebuilt, **tree, image and workstation md5-equal**. 378 tests (11 new).
+
+### Left open
+
+1. **`app calibrate --apply`, then `app plan`**, worker stopped. Above.
+2. **The banner** on the web UI misstates what runs do.
+3. **A Review page** -- held outputs, their VMAF, and an install button -- would
+   replace the stop / flip / install / flip / start dance by hand.
+4. **`app arr-rename`** for the eight installed files, whose names still say
+   `h264`/`AVC`. Preview first; it is the *arr's own rename.
+5. **Streams are only checked between jobs.** An encode that started before
+   someone pressed play runs to the end. Direct Play means Plex is not
+   transcoding, so contention is disks, not `/dev/dri`; nobody has reported a
+   stutter.
+6. Session 13's items 2-5 stand.
+
+---
+
 ## Session 13, part 2 (2026-09-09): the first real encode, and what it says about every estimate in the plan
 
 **The encode tier is started.** Eight files, `delete_original_on_success` set
@@ -950,6 +1117,9 @@ and fast motion are where a sampled score flatters an encode. **Watch one
 before trusting the tier.**
 
 ### `app work` exits when someone watches television
+
+**FIXED 2026-09-11, see Session 14** -- `worker.run(wait_for_streams=True)`
+pauses and polls instead. The history below is kept for why.
 
 **This cost a whole night and is the highest-value fix outstanding.** Job 1
 finished at 19:50 on 2026-09-08, the log says:
@@ -1249,9 +1419,9 @@ Those 83 are the genuinely uncalibrated leftovers. The 783 now say why.
 
 ### Left open
 
-1. **Make `worker.run` wait for a stream instead of exiting.** The highest-value
-   fix in the file: it is what makes an unattended night actually use its
-   window. See Session 13, part 2.
+1. ~~**Make `worker.run` wait for a stream instead of exiting.**~~ **Done
+   2026-09-11**, along with the always-on worker that makes a night start
+   itself. See Session 14.
 2. **Store `src_fps` in `bench_result`** so `expected_out_bitrate` survives a
    rebuild. Until then every rung models savings as a constant size ratio,
    which is wrong for any source far from the calibration clips' bitrate --

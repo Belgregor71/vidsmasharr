@@ -262,22 +262,41 @@ authorising deletion stays an edit to the config file.
 ### The trial batch
 
 With deletion off, verified outputs stay in `/scratch/encoding` and the library
-is not touched. Copy a couple onto each TV, confirm they direct-play and look
-right, then turn `delete_original_on_success` on and run:
+is not touched. Scratch is root-only, so set `safety.review_dir` (e.g.
+`/media/vidsmasharr-test`) and each held output is also copied there to be
+watched. Confirm they direct-play and look right, then stop the worker (below),
+turn `delete_original_on_success` on and run:
 
 ```sh
 docker compose -f docker/docker-compose.yml run --rm vidsmasharr app work --install-held
 ```
 
-That installs what is already encoded rather than spending those hours again.
+That installs what is already encoded rather than spending those hours again,
+and removes the review copies. `safety.max_held` stops new encodes once that
+many outputs are waiting to be watched.
 
 ### Scheduling
 
-Overnight the worker runs at full width; during the day it keeps going on one
-thread and niced, unless `day_enabled` is off. Either way it stops while
-anyone is streaming — Tautulli is asked first, Plex second, and *being unable
-to ask counts as "someone is watching"*. The box has one video engine, and a
-stuttering film is the fastest way for this project to be uninstalled.
+`docker compose up -d` starts two containers: the web UI, and
+`vidsmasharr-worker`, which runs `app work --execute --forever` — it works
+whenever the schedule allows and sleeps otherwise, so nobody has to start a
+night. Its log is the record: `docker logs vidsmasharr-worker`. Config edits
+are picked up before the next job.
+
+Overnight it runs at full width; during the day it keeps going on one thread
+and niced, unless `day_enabled` is off. Either way it pauses while anyone is
+streaming, and carries on when they stop — Tautulli is asked first, Plex
+second, and *being unable to ask counts as "someone is watching"*. The box has
+one video engine, and a stuttering film is the fastest way for this project to
+be uninstalled.
+
+Only one worker runs at a time. Stop it before a hand-typed `app work`,
+`--install-held` or `app plan`, and start it after:
+
+```sh
+docker stop vidsmasharr-worker
+docker start vidsmasharr-worker
+```
 
 ### When something fails
 

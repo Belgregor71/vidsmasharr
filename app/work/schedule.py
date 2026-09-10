@@ -33,6 +33,10 @@ class WorkWindow:
     # width or not at all, so the keepers list is night work only -- during the
     # day the worker steps over those jobs and takes the next hardware one.
     is_night: bool = False
+    # Not working, but only because someone is watching: the window is open.
+    # A stream ends; a closed window does not until tomorrow. `worker.run`
+    # waits out the first and stops for the second.
+    paused: bool = False
 
 
 def _parse(value: str) -> clock_time:
@@ -148,5 +152,5 @@ def may_work_now(config, now: datetime | None = None) -> WorkWindow:
 
     paused, reason = someone_is_watching(config)
     if paused:
-        return WorkWindow(working=False, threads=0, nice=0, reason=reason)
+        return WorkWindow(working=False, threads=0, nice=0, reason=reason, paused=True)
     return window

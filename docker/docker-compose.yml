@@ -14,21 +14,21 @@ services:
     image: vidsmasharr:latest
     container_name: vidsmasharr
 
-    devices:
+    devices: &devices
       # QuickSync. Nothing hardware-accelerated works without this.
       - /dev/dri:/dev/dri
-    group_add:
+    group_add: &group_add
       # 937 = the render node's gid on this NAS, confirmed above.
       - "937"
 
-    environment:
+    environment: &environment
       # Apollo Lake is Gen9. iHD is the modern driver; if the capability report
       # shows VAAPI failing to initialise, try i965 here instead.
       - LIBVA_DRIVER_NAME=iHD
       - TZ=${TZ:-Australia/Sydney}
       - VIDSMASHARR_CONFIG_DIR=/config
 
-    volumes:
+    volumes: &volumes
       # ../ because compose resolves relative paths against THIS file's
       # directory, not your working directory. This file lives in docker/, so
       # ./config would mean docker/config -- which does not exist.
@@ -69,3 +69,23 @@ services:
     #   docker compose run --rm vidsmasharr app scan --probe-limit 500
     #   docker compose run --rm vidsmasharr app status
     command: ["app", "serve"]
+
+  # The always-on worker: encodes whenever the schedule allows, waits out Plex
+  # streams, sleeps otherwise. Same image, devices and mounts as above; no
+  # port. `--execute` overrides safety.dry_run only -- whether originals are
+  # deleted is still safety.delete_original_on_success, re-read before each job.
+  #
+  # One worker at a time: a hand-typed `app work` while this is up stops with
+  # "another worker is already running". Stop this first:
+  #   docker stop vidsmasharr-worker
+  worker:
+    image: vidsmasharr:latest
+    container_name: vidsmasharr-worker
+    devices: *devices
+    group_add: *group_add
+    environment: *environment
+    volumes: *volumes
+    cpu_shares: 512
+    mem_limit: 1g
+    restart: unless-stopped
+    command: ["app", "work", "--execute", "--forever"]

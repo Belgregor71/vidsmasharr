@@ -87,6 +87,7 @@ class WorkerStats:
     saved_bytes: int = 0
     elapsed_s: float = 0.0
     stopped_because: str = ""
+    hit_delete_ceiling: bool = False
     results: list[JobResult] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -468,6 +469,14 @@ def run_decision(
         f"kept at {installed.final_path}" if not installed.original_deleted
         else f"replaced {source.name}"
     )
+    if not installed.original_deleted and config.safety.review_dir:
+        review = swap.copy_for_review(
+            installed.final_path, Path(config.safety.review_dir)
+        )
+        result.note += (
+            f", copy to watch at {review}" if review
+            else f" (could not copy it to {config.safety.review_dir})"
+        )
 
     _finish_job(db, job_id, "done", elapsed, vmaf=_vmaf_json(verdict))
     _record_outcome(db, job_id, row, info, verdict, installed, elapsed)
@@ -496,6 +505,31 @@ def run_decision(
 # ------------------------------------------------------------------ the loop
 
 
+_sleep = time.sleep  # patched out by the tests
+
+
+def _acquire_lock(config):
+    """One worker at a time, across every container on the box.
+
+    The always-on worker and a hand-typed `app work` would otherwise both run
+    `reclaim_stale` at startup, and the second would mark the first one's live
+    job as interrupted and hand it out again. The lock file sits in the config
+    bind mount, which both see. Returns the open handle -- the lock lasts as
+    long as it does -- or None if another worker holds it.
+    """
+    handle = open(Path(config.config_dir) / "worker.lock", "a")
+    try:
+        import fcntl
+    except ImportError:  # Windows, where only the tests run
+        return handle
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
 def run(
     db: Database,
     config,
@@ -503,13 +537,45 @@ def run(
     limit: int | None = None,
     execute: bool = False,
     ignore_schedule: bool = False,
+    wait_for_streams: bool = False,
+    reload=None,
     progress=print,
+) -> WorkerStats:
+    """Work through the queue until the window, the queue or a ceiling stops it.
+
+    `wait_for_streams` pauses while someone is watching and carries on when
+    they stop, instead of ending the run. Until it existed, one person watching
+    television at eight in the evening cost the whole 22:00-07:00 window.
+
+    `reload` is called before each job for a fresh config, so an always-on
+    worker notices config.yaml edits -- turning deletion on, say -- without a
+    restart. If it raises, the config already in hand is kept.
+    """
+    lock = _acquire_lock(config)
+    if lock is None:
+        stats = WorkerStats()
+        stats.stopped_because = "another worker is already running"
+        return stats
+    try:
+        return _run(
+            db, config, limit=limit, execute=execute,
+            ignore_schedule=ignore_schedule, wait_for_streams=wait_for_streams,
+            reload=reload, progress=progress,
+        )
+    finally:
+        lock.close()
+
+
+def _run(
+    db: Database, config, *, limit, execute, ignore_schedule, wait_for_streams,
+    reload, progress,
 ) -> WorkerStats:
     stats = WorkerStats()
     started = time.monotonic()
     dry_run = config.safety.dry_run and not execute
     deletes = 0
     seen: set[int] = set()
+    paused_since: float | None = None
 
     reclaimed = reclaim_stale(db)
     if reclaimed and progress:
@@ -517,6 +583,14 @@ def run(
                  f"interrupted run")
 
     while limit is None or stats.attempted < limit:
+        if reload:
+            try:
+                config = reload()
+            except Exception as exc:  # a half-saved config.yaml must not stop work
+                if progress:
+                    progress(f"  config reload failed, keeping the old one: {exc}")
+            dry_run = config.safety.dry_run and not execute
+
         if ignore_schedule:
             # --now is an explicit override of the schedule, so it overrides the
             # night-only rule for software encodes too: you asked for full width.
@@ -528,7 +602,7 @@ def run(
             # fixed the code built its window directly and never asked.
             paused, reason = schedule.someone_is_watching(config)
             window = (
-                schedule.WorkWindow(False, 0, 0, reason)
+                schedule.WorkWindow(False, 0, 0, reason, paused=True)
                 if paused
                 else schedule.WorkWindow(
                     True, config.schedule.night_threads, 0, "schedule ignored",
@@ -538,15 +612,39 @@ def run(
         else:
             window = schedule.may_work_now(config)
         if not window.working:
+            if window.paused and wait_for_streams:
+                if paused_since is None:
+                    paused_since = time.monotonic()
+                    if progress:
+                        progress(f"  paused: {window.reason}; asking again every "
+                                 f"{config.schedule.plex_poll_seconds}s")
+                _sleep(config.schedule.plex_poll_seconds)
+                continue
             stats.stopped_because = window.reason
             break
+        if paused_since is not None:
+            if progress:
+                minutes = (time.monotonic() - paused_since) / 60
+                progress(f"  resumed after {minutes:.0f} min: {window.reason}")
+            paused_since = None
 
         if deletes >= config.safety.max_deletes_per_run:
+            stats.hit_delete_ceiling = True
             stats.stopped_because = (
                 f"hit the {config.safety.max_deletes_per_run}-delete ceiling for "
                 f"one run"
             )
             break
+
+        cap = config.safety.max_held
+        if cap and not dry_run and not config.safety.delete_original_on_success:
+            held = db.scalar("SELECT COUNT(*) FROM decision WHERE state='held'") or 0
+            if held >= cap:
+                stats.stopped_because = (
+                    f"{held} output(s) are waiting for review "
+                    f"(safety.max_held is {cap})"
+                )
+                break
 
         row = next_decision(
             db, seen if dry_run else None, allow_software=window.is_night
@@ -831,6 +929,14 @@ def install_held(db: Database, config, *, progress=print) -> WorkerStats:
             stats.failed += 1
             _fail(db, row, installed.error or "install failed")
             continue
+
+        # Installed, so the copy made for watching is now a duplicate of a
+        # library file sitting inside the media share.
+        if config.safety.review_dir:
+            try:
+                (Path(config.safety.review_dir) / output.name).unlink(missing_ok=True)
+            except OSError:
+                pass
 
         out_bytes = structure.out_info.size_bytes if structure.out_info else 0
         stats.succeeded += 1
