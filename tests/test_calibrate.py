@@ -102,6 +102,20 @@ class TestMeasure:
         assert calibration.speed_factor("hevc_vaapi:1080p") == pytest.approx(1.5, abs=0.01)
         assert calibration.speed_factor("hevc_vaapi:sd") == pytest.approx(0.5, abs=0.01)
 
+    def test_a_new_resolution_uses_its_encoder_not_the_remux_tier(self, db):
+        """The September 2026 shape: 207 remuxes at x2.02 and 8 encodes at
+        x0.94. A 720p encode has no outcomes of its own, and the pooled median
+        is the remuxes -- which would have doubled 892 estimates."""
+        for _ in range(20):
+            record(db, encoder=None, action="remux", resolution="1080p",
+                   basis="stream-copy", est_cpu=1000, cpu=2000)
+        for _ in range(8):
+            record(db, encoder="hevc_vaapi", resolution="1080p", est_cpu=1000, cpu=940)
+
+        calibration = calibrate.measure(db).calibration
+        assert calibration.speed_default == pytest.approx(2.0, abs=0.01)
+        assert calibration.speed_factor("hevc_vaapi:720p") == pytest.approx(0.94, abs=0.01)
+
     def test_an_absurd_factor_is_clamped_and_flagged(self, db):
         for _ in range(10):
             record(db, est_out=1 * MB, after=1 * GB)
@@ -204,6 +218,46 @@ class TestCorrectedEstimator:
     def test_speed_falls_back_to_the_encoder_when_the_resolution_is_new(self):
         calibration = calibrate.Calibration(speed_factors={"hevc_vaapi": 1.4})
         assert calibration.speed_factor("hevc_vaapi:2160p") == 1.4
+
+    def ratio_rung(self):
+        """A rung with no measured output bitrate, so the policy target and
+        the size ratio are the two models -- the live ladder's shape."""
+        return Rung(
+            encoder="hevc_vaapi", content_class="movie", resolution="1080p",
+            target_vmaf=95.0, quality=19.0, quality_flag="qp",
+            expected_size_ratio=0.40, expected_fps=30.0, samples=5,
+        )
+
+    def test_a_fat_source_gets_the_ratio_correction(self, config):
+        """Black Bag: 35.9 Mbps, estimated at 40%, came out at 8%."""
+        facts = self.facts()
+        facts.v_bitrate = 36_000_000
+        calibration = calibrate.Calibration(size_factors={"ladder-ratio": 0.43})
+
+        raw = estimate_mod.Estimator().encode(facts, self.ratio_rung(), None, config)
+        corrected = estimate_mod.Estimator(calibration).encode(
+            facts, self.ratio_rung(), None, config
+        )
+
+        assert raw.basis == "ladder-ratio"
+        assert corrected.basis == "ladder-ratio+cal"
+        assert corrected.detail["out_bitrate"] == pytest.approx(36_000_000 * 0.40 * 0.43, rel=0.01)
+
+    def test_no_cliff_at_the_crossover(self, config):
+        """At 10 Mbps the ratio model only just beats the 3.5 Mbps policy
+        target. Correcting the winner after the fact would promise this file
+        2.3x the saving of one at 8.5 Mbps; corrected first, the policy target
+        wins again and the two files are estimated alike."""
+        just_over, just_under = self.facts(), self.facts()
+        just_over.v_bitrate, just_under.v_bitrate = 10_000_000, 8_500_000
+        calibration = calibrate.Calibration(size_factors={"ladder-ratio": 0.43})
+        estimator = estimate_mod.Estimator(calibration)
+
+        over = estimator.encode(just_over, self.ratio_rung(), None, config)
+        under = estimator.encode(just_under, self.ratio_rung(), None, config)
+
+        assert over.basis == under.basis == "policy-target+cal"
+        assert over.out_bytes == under.out_bytes
 
     def test_no_calibration_leaves_the_estimate_untouched(self, config):
         a = estimate_mod.Estimator().encode(self.facts(), self.rung(), None, config)

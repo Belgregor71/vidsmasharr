@@ -24,10 +24,10 @@ ssh -i ~/.ssh/nas_synology BrettGreg@192.168.0.179 'sudo -n /usr/local/bin/docke
 `app plan`** -- `sudo -n /usr/local/bin/docker stop vidsmasharr-worker`, then
 `start` it after. Read **Session 14** for why each of the three needs it.
 
-**`app calibrate --apply` then `app plan` is the next job, and was skipped.**
-The first batch was installed without it. The size model has 9 encodes and
-over-predicts output size by 2.3x (`ladder-ratio` x0.43), so the queue is still
-ranked on the uncalibrated estimate. See Session 14.
+**Calibration is APPLIED and the queue re-planned (2026-09-11 06:35)** --
+`ladder-ratio` x0.43, `hevc_vaapi:1080p` speed x0.94, **6,488 GB over 2,489
+encode-hours**. Two calibration bugs were fixed first; read "Session 14,
+part 2" before re-running `app calibrate --apply`.
 
 **Read "Session 13, part 2" below before drawing any conclusion from the plan's
 numbers** -- the first real encode beat its size estimate by 5x, and the reason
@@ -104,14 +104,15 @@ Rows not restated here are unchanged from the 2026-09-09 table below.
 
 | | where it stands |
 |---|---|
-| Code | **378 tests.** Session 14's commit is on `main` and **deployed** -- tree and image md5-verified against the workstation 2026-09-11. Not pushed |
+| Code | **381 tests.** Session 14's code, including part 2's calibration fixes, is **deployed** -- tree and image md5-verified against the workstation 2026-09-11. Not pushed |
 | Worker | **`vidsmasharr-worker` UP since 2026-09-11 06:04**, `restart: unless-stopped`. First job on start: Failure Frame S01E03. Its log is the record of every night now; `~/resume-batch.sh` and `~/encode-*.log` are retired |
 | Web UI | **`vidsmasharr` UP since 2026-09-10** on :8330. It had never been left running before |
 | NAS `config.yaml` | `delete_original_on_success: false`, `review_dir: /media/vidsmasharr-test`, `max_held: 20`, `day_enabled: true` (kept on deliberately). Backups `config.yaml.bak-20260910`, `.bak-before-install-first8`, `.bak-before-worker` |
 | Encode tier | **First batch of 8 INSTALLED 2026-09-10**: 8/8 passed, **76.98 GB reclaimed**, originals deleted, Sonarr/Radarr rescanned. Watched on the TVs first. 4,931 pending |
-| Outcomes recorded | **221, of which 9 are encodes** (8 `hevc_vaapi:1080p`, 1 `hevc_qsv:1080p`). Enough for `app calibrate --apply`, which has NOT been run |
+| Outcomes recorded | **222, of which 10 are encodes.** Calibration **applied 2026-09-11** from 221 of them; DB backed up first to `/config/vidsmasharr.db.bak-before-calibrate-20260911` |
+| Plan | **Re-planned 2026-09-11 06:35 on the calibrated estimator: 6,488 GB over 2,489 encode-hours, 311 nights at 8h** (was 6,174 GB / 2,597 h) |
 | Media library | 8 encodes installed on top of the remux tier. Their filenames still say `h264`/`AVC` -- `app arr-rename` has not been run |
-| Next action | **Stop the worker, `app calibrate --apply`, `app plan`, start the worker.** Then watch the next batch in `vidsmasharr-test` and install it the same way |
+| Next action | **Watch the batch as it lands in `vidsmasharr-test`, then stop the worker and install it.** The first held output (Failure Frame S01E03, VMAF 95.7) is already there |
 
 ### State at a glance (2026-09-09 16:10)
 
@@ -1046,7 +1047,7 @@ image rebuilt, **tree, image and workstation md5-equal**. 378 tests (11 new).
 
 ### Left open
 
-1. **`app calibrate --apply`, then `app plan`**, worker stopped. Above.
+1. ~~**`app calibrate --apply`, then `app plan`**~~ **Done, part 2 below.**
 2. **The banner** on the web UI misstates what runs do.
 3. **A Review page** -- held outputs, their VMAF, and an install button -- would
    replace the stop / flip / install / flip / start dance by hand.
@@ -1057,6 +1058,60 @@ image rebuilt, **tree, image and workstation md5-equal**. 378 tests (11 new).
    transcoding, so contention is disks, not `/dev/dri`; nobody has reported a
    stutter.
 6. Session 13's items 2-5 stand.
+
+### Part 2: calibration applied, after two bugs that would have skewed it
+
+Applying the factors as they were would have made the queue worse, not better:
+
+- **Speed: a missing fallback step.** `Calibration.speed_factor` promises
+  "exact key, then the encoder on its own, then pooled", but `measure()` never
+  built the encoder-level group. **892 pending 720p encodes (1,528 GB)** and 15
+  sd ones would have skipped to the pooled median -- 207 remuxes at x2.02 over
+  8 encodes -- and had their hours doubled. `measure()` now builds per-encoder
+  groups, so they get `hevc_vaapi`'s x0.94.
+- **Size: a cliff at the model crossover.** `video_out_bitrate` takes the larger
+  of policy-target and ladder-ratio, and calibration then scaled *the winner*.
+  The x0.43 was measured only on 20-36 Mbps sources, so a file just fat enough
+  for the ratio to win would have been promised 2.3x its neighbour's saving.
+  The factor is now applied to each model *before* the max, so near the
+  crossover the policy target wins again. It is applied to video only while
+  measured on whole files -- audio stays uncorrected, output over-predicted,
+  the safe direction.
+
+Also found and **not** fixed: **4,434 of the 4,930 pending jobs are
+`policy-target`**, a model with no measurements at all -- every encode so far
+was a fat `ladder-ratio` source, because those rank first. They keep the raw
+estimate until `policy-target` outcomes accumulate. And re-running calibration
+later will not converge the way the module docstring says: the estimator looks
+factors up by raw basis (`ladder-ratio`), never by `ladder-ratio+cal`, so the
+residual on a corrected model is measured and never used.
+
+**How it was run:** rehearsed first on a `sqlite3` backup copy in a throwaway
+container (`app calibrate --db /tmp/p.db --apply`, `app plan --db /tmp/p.db`),
+which showed the result before the live DB was touched. Then: waited for job
+230 to finish, stopped the worker, `reclaim_stale` on the job the stop
+interrupted (Westworld S01E09, 18 seconds in) so it would be re-planned rather
+than kept on its old estimate, `app calibrate --apply`, `app plan`,
+`docker compose up -d` onto the rebuilt image.
+
+| | before | after |
+|---|---|---|
+| queued saving | 6,174 GB | **6,488 GB** |
+| encode-hours | 2,597 h | **2,489 h** |
+| top of the queue | Westworld, Outlander, Shield Hero | three audio-only remuxes, then Ghostbusters, Challengers, Poor Things |
+
+The three remuxes are new because the re-plan also picked up the 10 duplicate
+keepers the user chose on 2026-09-10. The worker took them first on restart.
+
+**Two things seen on the way:**
+
+- **`docker stop` takes 10 seconds and SIGKILLs** (exit 137): `python3 -m app`
+  is PID 1 and ignores SIGTERM. Harmless -- the killed job is reclaimed -- but
+  a SIGTERM handler, or `init: true` in compose, would make stops clean.
+- **The Overview page timed out once at 120 s** right after the restart, then
+  loaded in 12 s. The box was at load 14.7, 39% iowait, 0.15 GB free RAM and
+  4.9 GB swapped (54 days up) while the worker remuxed. Overview takes ~10 s
+  even idle; its queries are worth a look.
 
 ---
 

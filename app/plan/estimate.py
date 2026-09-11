@@ -208,7 +208,8 @@ def source_video_bytes(facts: FileFacts) -> int:
 
 
 def video_out_bitrate(
-    facts: FileFacts, rung: Rung, target_height: int | None, policy
+    facts: FileFacts, rung: Rung, target_height: int | None, policy,
+    size_factor=None,
 ) -> tuple[int, str]:
     """Predicted output video bitrate, and where the number came from.
 
@@ -222,6 +223,15 @@ def video_out_bitrate(
       the source, so it over-predicts output for unusually fat sources -- and
       over-predicting output means under-promising savings, which is the safe
       direction here.
+
+    `size_factor(basis)` is the calibration, applied to each model *before*
+    the larger is taken. Correcting only the winner made a cliff at the
+    crossover: the first nine encodes put `ladder-ratio` at x0.43, measured on
+    20-36 Mbps sources, and a file just fat enough for the ratio to win would
+    have been promised 2.3x its neighbour's saving. Corrected first, the ratio
+    stops winning near the crossover and the policy target takes over again.
+    The factor was measured on whole files and is applied to video alone,
+    which leaves the audio uncorrected -- output over-predicted, the safe way.
     """
     out_tier = "1080p" if target_height == 1080 else facts.tier
     models: list[tuple[int, str]] = []
@@ -241,6 +251,9 @@ def video_out_bitrate(
         models.append(
             (int(facts.v_bitrate * rung.expected_size_ratio), "ladder-ratio")
         )
+
+    if size_factor is not None:
+        models = [(int(rate * size_factor(name)), f"{name}+cal") for rate, name in models]
 
     bitrate, basis = max(models)
 
@@ -292,16 +305,20 @@ class Estimator:
     def encode(
         self, facts: FileFacts, rung: Rung, target_height: int | None, config
     ) -> Estimate:
-        bitrate, basis = video_out_bitrate(facts, rung, target_height, config.policy)
+        # Size is corrected per model inside, before the models are compared;
+        # see video_out_bitrate. Only speed is corrected here.
+        bitrate, basis = video_out_bitrate(
+            facts, rung, target_height, config.policy,
+            size_factor=self.calibration.size_factor if self.calibration else None,
+        )
         video_out = int(bitrate * max(facts.duration_s, 0.0) / 8)
         audio_out, audio_dropped, detail = audio_bytes_after(facts, config.audio)
 
         out_bytes = int((video_out + audio_out) * CONTAINER_OVERHEAD)
         cpu_seconds = encode_seconds(facts, rung, target_height)
         out_tier = "1080p" if target_height == 1080 else facts.tier
-        out_bytes, cpu_seconds, basis = self._correct(
-            out_bytes, cpu_seconds, basis, f"{rung.encoder}:{out_tier}"
-        )
+        if self.calibration is not None:
+            cpu_seconds *= self.calibration.speed_factor(f"{rung.encoder}:{out_tier}")
         # An encode can genuinely grow a file; the rules use the saving to
         # reject that, so it must be allowed to come out at or below zero.
         saved = facts.size_bytes - out_bytes

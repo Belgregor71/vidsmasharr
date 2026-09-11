@@ -215,6 +215,11 @@ def measure(db, *, min_samples: int = MIN_SAMPLES) -> Report:
 
     size_groups: dict[str, Group] = {}
     speed_groups: dict[str, Group] = {}
+    # The middle step of Calibration.speed_factor's fallback. Without it a
+    # resolution with no outcomes of its own skipped straight to the pooled
+    # factor, which is whatever the remux tier says: in September 2026, 207
+    # remuxes at x2.02 against 8 encodes at x0.94, doubling every 720p estimate.
+    encoder_groups: dict[str, Group] = {}
     all_size: list[float] = []
     all_speed: list[float] = []
 
@@ -239,6 +244,10 @@ def measure(db, *, min_samples: int = MIN_SAMPLES) -> Report:
             ratio = row["cpu_seconds"] / est_cpu
             speed_groups.setdefault(
                 key, Group(key, "speed", min_samples=min_samples)
+            ).ratios.append(ratio)
+            encoder = key.split(":", 1)[0]
+            encoder_groups.setdefault(
+                encoder, Group(encoder, "speed", min_samples=min_samples)
             ).ratios.append(ratio)
             all_speed.append(ratio)
             counted = True
@@ -272,7 +281,10 @@ def measure(db, *, min_samples: int = MIN_SAMPLES) -> Report:
 
     report.calibration = Calibration(
         size_factors={g.key: g.factor for g in usable_size},
-        speed_factors={g.key: g.factor for g in usable_speed},
+        speed_factors={
+            **{g.key: g.factor for g in encoder_groups.values() if g.usable},
+            **{g.key: g.factor for g in usable_speed},
+        },
         size_default=_clamped_median(all_size) if len(all_size) >= min_samples else 1.0,
         speed_default=_clamped_median(all_speed) if len(all_speed) >= min_samples else 1.0,
         samples=report.used,
