@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Review &middot; vidsmasharr{% endblock %}
+
+{% block content %}
+<h1>Review</h1>
+<p class="note">
+  Each of these was encoded and verified, and the original is still exactly
+  where it was. Watch the copy, then approve or reject it. Approving is what
+  deletes the original &mdash; the worker does it on its next pass, so nothing
+  moves while an encode is part-way through.
+</p>
+
+<section class="tiles">
+  <div class="tile{{ ' warn' if at_cap }}">
+    <span class="k">{{ waiting }}</span>
+    <span class="l">waiting on you</span>
+    <span class="s">
+      {% if at_cap %}the {{ cap }}-output cap is reached, so nothing new is
+      encoding until some of these are cleared{% elif cap %}cap is {{ cap }}{%
+      else %}no cap set{% endif %}
+    </span>
+  </div>
+  <div class="tile">
+    <span class="k">{{ approved }}</span>
+    <span class="l">approved</span>
+    <span class="s">queued for the worker to install</span>
+  </div>
+  <div class="tile">
+    <span class="k">{{ rejected }}</span>
+    <span class="l">rejected</span>
+    <span class="s">queued to be thrown away</span>
+  </div>
+</section>
+
+{% if review_dir %}
+<p class="note">Watch them in <code>{{ review_dir }}</code>.</p>
+{% else %}
+<p class="warn-note">
+  <strong>safety.review_dir is not set</strong>, so no watchable copy is being
+  made. Scratch is root-only and invisible to Plex &mdash; set it before
+  approving anything, or you are approving files you cannot open.
+</p>
+{% endif %}
+
+{% if not items %}
+  <div class="empty">
+    <p>Nothing is waiting. Held outputs appear here as the worker finishes
+    them{% if not holding %}, though <code>delete_original_on_success</code> is
+    on, so encodes are installing themselves without stopping here{% endif %}.</p>
+  </div>
+{% else %}
+<table>
+  <thead>
+    <tr>
+      <th>File</th>
+      <th>Action</th>
+      <th class="n">VMAF</th>
+      <th class="n">Before</th>
+      <th class="n">After</th>
+      <th class="n">Saves</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for item in items %}
+    <tr class="{{ 'keeper' if item.state == 'approved' }}">
+      <td>
+        {{ item.title_name or item.name }}
+        <div class="path" title="{{ item.watch_path or item.scratch_path }}">
+          {{ item.watch_path or item.scratch_path }}
+        </div>
+      </td>
+      <td>
+        <span class="tag act-{{ item.action }}">{{ item.action }}</span>
+      </td>
+      <td class="n">
+        {% if item.vmaf_mean %}
+          {{ item.vmaf_mean | round(1) }}
+        {% else %}
+          <span class="muted" title="a remux copies the video stream bit for bit, so there is nothing to score">&mdash;</span>
+        {% endif %}
+      </td>
+      <td class="n">{{ item.size_bytes | bytes }}</td>
+      <td class="n">{{ item.after_bytes | bytes }}</td>
+      <td class="n">{{ (item.saved_bytes or item.est_saved_bytes) | bytes }}</td>
+      <td class="act">
+        {% if item.state == 'held' %}
+          <form method="post" action="/review/{{ item.id }}/approve">
+            <button type="submit">Approve</button>
+          </form>
+          <form method="post" action="/review/{{ item.id }}/reject">
+            <button type="submit" class="ghost">Reject</button>
+          </form>
+        {% else %}
+          <span class="muted">
+            {{ 'approved' if item.state == 'approved' else 'rejected' }}
+          </span>
+          <form method="post" action="/review/{{ item.id }}/undo">
+            <button type="submit" class="ghost">Undo</button>
+          </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

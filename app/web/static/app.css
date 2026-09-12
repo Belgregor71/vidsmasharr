@@ -96,6 +96,12 @@ button.ghost { background: transparent; color: var(--muted); }
 .members tr.keeper { background: rgba(111, 207, 151, 0.06); }
 .members td.act form { margin: 0; }
 
+/* Review: approve and reject sit side by side on one row, and an approved row
+   is tinted the same green a chosen keeper gets on /duplicates. */
+td.act { white-space: nowrap; text-align: right; }
+td.act form { display: inline-block; margin: 0 0 0 0.35rem; }
+tr.keeper { background: rgba(111, 207, 151, 0.06); }
+
 .tag { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 4px; font-size: 11px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
 .tag.hdr { color: var(--warn); border-color: #4a3f24; }
 .tag.src-plex { color: var(--accent); }

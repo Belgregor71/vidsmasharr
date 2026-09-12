@@ -222,6 +222,95 @@ def activity(request: Request):
     )
 
 
+@router.get("/review")
+def review(request: Request):
+    """The held outputs, with the verdict each one earned, waiting on a human.
+
+    Nothing on this page moves a file. Approving marks the row and the worker
+    installs it on its next pass, under the same lock it holds for everything
+    else -- the web process must never write to the media volume while an
+    encode may be part-way through installing its own output.
+    """
+    db = request.app.state.db
+    config = request.app.state.config
+
+    rows = db.query(
+        """
+        SELECT d.id, d.state, d.action, d.profile, d.est_saved_bytes,
+               mf.path, mf.size_bytes, t.name AS title_name,
+               j.scratch_path, j.vmaf_json, j.ended_at,
+               o.after_bytes, o.saved_bytes, o.vmaf_mean, o.vmaf_min
+        FROM decision d
+        JOIN media_file mf ON mf.id = d.file_id
+        JOIN job j ON j.decision_id = d.id AND j.state = 'done'
+        LEFT JOIN title t ON t.id = d.title_id
+        LEFT JOIN outcome o ON o.job_id = j.id
+        WHERE d.state IN ('held', 'approved', 'rejected_pending')
+        ORDER BY
+            CASE d.state WHEN 'held' THEN 0 ELSE 1 END,
+            COALESCE(o.saved_bytes, d.est_saved_bytes) DESC
+        """
+    )
+
+    # Where to actually watch each one. Scratch is root-only and invisible to
+    # Plex, so the review copy is the only path a human can open -- showing the
+    # scratch path alone is what made the first trial batch unwatchable.
+    review_dir = config.safety.review_dir
+    items = []
+    for row in rows:
+        item = dict(row)
+        name = (row["scratch_path"] or row["path"]).rsplit("/", 1)[-1]
+        item["watch_path"] = f"{review_dir}/{name}" if review_dir else None
+        item["name"] = name
+        items.append(item)
+
+    waiting = sum(1 for i in items if i["state"] == "held")
+    return _render(
+        request, "review.html",
+        items=items, waiting=waiting,
+        approved=sum(1 for i in items if i["state"] == "approved"),
+        rejected=sum(1 for i in items if i["state"] == "rejected_pending"),
+        cap=config.safety.max_held,
+        at_cap=bool(config.safety.max_held and waiting >= config.safety.max_held),
+        review_dir=review_dir,
+        holding=not config.safety.delete_original_on_success,
+    )
+
+
+def _set_review_state(request: Request, decision_id: int, state: str):
+    """Move one held decision, and only if it is still held.
+
+    The guard matters: the worker may have installed or discarded the row since
+    the page was rendered, and a second click must not resurrect a decision that
+    has already been acted on.
+    """
+    db = request.app.state.db
+    db.execute(
+        "UPDATE decision SET state=? WHERE id=? AND state IN "
+        "('held','approved','rejected_pending')",
+        (state, decision_id),
+    )
+    return RedirectResponse("/review", status_code=303)
+
+
+@router.post("/review/{decision_id}/approve")
+def approve(request: Request, decision_id: int):
+    """Watched it, keep it. The worker installs it and deletes the original."""
+    return _set_review_state(request, decision_id, "approved")
+
+
+@router.post("/review/{decision_id}/reject")
+def reject(request: Request, decision_id: int):
+    """Watched it, it is not good enough. The output is thrown away."""
+    return _set_review_state(request, decision_id, "rejected_pending")
+
+
+@router.post("/review/{decision_id}/undo")
+def undo_review(request: Request, decision_id: int):
+    """Put a row back in the queue before the worker has acted on it."""
+    return _set_review_state(request, decision_id, "held")
+
+
 @router.post("/duplicates/{group_id}/keeper")
 def set_keeper(request: Request, group_id: int, file_id: int = Form(...)):
     """Record that a human chose a different copy to keep."""

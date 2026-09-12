@@ -34,7 +34,9 @@
   <div class="tile{{ ' warn' if failed }}">
     <span class="k">{{ failed }}</span>
     <span class="l">failed</span>
-    <span class="s">{{ held }} held in scratch</span>
+    <span class="s">
+      {% if held %}<a href="/review">{{ held }} waiting for review</a>{% else %}nothing held in scratch{% endif %}
+    </span>
   </div>
 </section>
 
