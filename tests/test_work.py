@@ -1381,3 +1381,43 @@ class TestRecheckingQuarantine:
         assert stats.still_failing == 1
         assert held.exists()
         assert db.scalar("SELECT state FROM decision") == "failed"
+
+
+class TestInstallIsAudible:
+    """An hour of silent disk work reads as a hung worker.
+
+    Installing approved outputs is a multi-gigabyte copy per file, and it is the
+    one operation that deletes originals. It has to announce itself before the
+    first copy starts and report each file as it lands, not summarise once the
+    whole batch is done.
+    """
+
+    def test_the_batch_announces_itself_before_any_copying(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        approval = TestApprovalFromReview()
+        approval._held(db, config, tmp_path, monkeypatch)
+        said = []
+
+        worker.install_approved(db, config, progress=said.append)
+
+        assert said, "installing said nothing at all"
+        assert "installing 1 approved output(s)" in said[0]
+        assert "GB of originals to replace" in said[0]
+        assert any("installed" in line for line in said[1:]), said
+
+    def test_the_loop_passes_its_progress_through(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        """The regression: the loop used to call it with progress=None."""
+        approval = TestApprovalFromReview()
+        approval._held(db, config, tmp_path, monkeypatch)
+        said = []
+
+        monkeypatch.setattr(
+            schedule, "may_work_now",
+            lambda cfg: schedule.WorkWindow(True, 4, 0, "test", is_night=True),
+        )
+        worker.run(db, config, limit=1, execute=True, progress=said.append)
+
+        assert any("installing 1 approved" in line for line in said), said

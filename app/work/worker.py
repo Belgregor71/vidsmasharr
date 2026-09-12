@@ -643,8 +643,8 @@ def _run(
         # is what releases a worker the cap has stopped -- which is the whole
         # point of the button.
         if not dry_run:
-            done = install_approved(db, config, progress=None)
-            discarded = discard_rejected(db, config, progress=None)
+            done = install_approved(db, config, progress=progress)
+            discarded = discard_rejected(db, config, progress=progress)
             if done.attempted or discarded:
                 stats.installed += done.succeeded
                 stats.discarded += discarded
@@ -953,6 +953,15 @@ def _install_outputs(
         """,
         (state,),
     )
+
+    # Say what is about to happen before the first multi-gigabyte copy starts,
+    # not after the last one finishes. Installing 19 approved outputs is an hour
+    # of silent disk work otherwise, and silence from the one operation that
+    # deletes originals reads as a hung worker.
+    if progress and rows:
+        total = sum(row["size_bytes"] or 0 for row in rows)
+        progress(f"  installing {len(rows)} {state} output(s), "
+                 f"{total / GB:,.1f} GB of originals to replace ...")
     for row in rows:
         stats.attempted += 1
         output = Path(row["scratch_path"] or "")
