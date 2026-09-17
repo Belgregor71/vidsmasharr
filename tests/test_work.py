@@ -1421,3 +1421,108 @@ class TestInstallIsAudible:
         worker.run(db, config, limit=1, execute=True, progress=said.append)
 
         assert any("installing 1 approved" in line for line in said), said
+
+
+# Real stderr tails from the failures reviewed on 2026-09-17.
+GPU_HANG_STDERR = """\
+frame=84769 fps= 41 q=-0.0 size= 2470000KiB time=00:58:55.00 bitrate=5741.1kbits/s speed=1.69x
+[vf#0:0 @ 0x55cd883a8d00] Error while filtering: Input/output error
+[vf#0:0 @ 0x55cd883a8d00] Task finished with error code: -5 (Input/output error)
+[out#0/matroska @ 0x55cd883a8d00] video:2170329KiB audio:279715KiB subtitle:26236KiB muxing overhead: 0.060581%
+frame=84769 fps= 41 q=-0.0 Lsize= 2477780KiB time=00:58:55.53 bitrate=5741.1kbits/s speed=1.69x
+Conversion failed!
+"""
+
+REINIT_STDERR = """\
+[h264 @ 0x55c1add95540] SEI type 0 overread by 8 bits
+Impossible to convert between the formats supported by the filter 'Parsed_null_0' and the filter 'auto_scale_0'
+[vf#0:0 @ 0x55c1adcb3b80] Error reinitializing filters!
+[vf#0:0 @ 0x55c1adcb3b80] Task finished with error code: -38 (Function not implemented)
+[out#0/matroska @ 0x5611737917c0] video:2496KiB audio:440KiB subtitle:0KiB muxing overhead: 0.147426%
+frame=  101 fps= 33 q=-0.0 Lsize=    2939KiB time=00:00:04.33 bitrate=5551.4kbits/s speed=1.43x
+Conversion failed!
+"""
+
+
+class TestEncodeFailures:
+    """Exit 251 is the iGPU hanging, not the file; everything else is the file."""
+
+    def run_with_exits(self, db, config, tmp_path, monkeypatch, exits):
+        source, _, _ = seed_job(db, tmp_path)
+        config.safety.dry_run = False
+        monkeypatch.setattr(worker, "probe", lambda p, f: fake_info(path=str(source)))
+        outcomes = iter(exits)
+
+        def fake_run(cmd, timeout, nice=0, on_progress=None):
+            code, stderr = next(outcomes)
+            return code, stderr, 100.0
+
+        monkeypatch.setattr(worker, "_run_with_progress", fake_run)
+        slept: list[float] = []
+        monkeypatch.setattr(worker, "_sleep", slept.append)
+        # Anything that gets as far as verification is a success for these tests.
+        monkeypatch.setattr(
+            verify, "check_structure",
+            lambda *a, **k: verify.Verification(ok=False, failures=["stop here"]),
+        )
+        monkeypatch.setattr(swap, "quarantine", lambda *a, **k: None)
+
+        said: list[str] = []
+        row = worker.next_decision(db)
+        window = schedule.WorkWindow(True, 4, 0, "test", is_night=True)
+        result = worker.run_decision(
+            db, config, row, window=window, dry_run=False, progress=said.append
+        )
+        return result, slept, said
+
+    def test_a_gpu_hang_gets_one_more_go(self, db, config, tmp_path, monkeypatch):
+        result, slept, said = self.run_with_exits(
+            db, config, tmp_path, monkeypatch,
+            [(251, GPU_HANG_STDERR), (0, "")],
+        )
+
+        assert "encode failed" not in (result.error or "")
+        assert slept == [worker.GPU_HANG_PAUSE_S]
+        assert any("GPU hang" in line for line in said), said
+        jobs = db.query("SELECT state, attempts FROM job ORDER BY id")
+        assert [(j["state"], j["attempts"]) for j in jobs][0] == ("failed", 1)
+        assert jobs[1]["attempts"] == 2
+        assert result.cpu_seconds == 200.0  # both attempts cost CPU
+
+    def test_a_second_gpu_hang_fails_the_decision(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        result, slept, _ = self.run_with_exits(
+            db, config, tmp_path, monkeypatch,
+            [(251, GPU_HANG_STDERR), (251, GPU_HANG_STDERR)],
+        )
+
+        assert result.error.startswith("encode failed (251)")
+        assert len(slept) == 1
+        assert db.scalar("SELECT state FROM decision") == "failed"
+        assert db.scalar("SELECT COUNT(*) FROM job WHERE state='failed'") == 2
+
+    def test_other_exits_are_not_retried(self, db, config, tmp_path, monkeypatch):
+        result, slept, _ = self.run_with_exits(
+            db, config, tmp_path, monkeypatch, [(218, REINIT_STDERR)],
+        )
+
+        assert slept == []
+        assert db.scalar("SELECT state FROM decision") == "failed"
+        assert db.scalar("SELECT COUNT(*) FROM job") == 1
+        assert "Error reinitializing filters" in result.error
+
+
+class TestFfmpegErrorSummary:
+    def test_it_keeps_the_cause_not_the_byte_count(self):
+        summary = worker.ffmpeg_error_summary(REINIT_STDERR)
+        assert "Impossible to convert" in summary
+        assert "Function not implemented" in summary
+        assert "muxing overhead" not in summary
+        assert "Conversion failed!" not in summary
+
+    def test_it_falls_back_to_the_tail_when_nothing_looks_like_an_error(self):
+        assert worker.ffmpeg_error_summary("a\nb\nc\nd") == "b | c | d"
+
+    def test_nothing_is_nothing(self):
+        assert worker.ffmpeg_error_summary(None) == ""

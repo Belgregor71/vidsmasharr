@@ -62,6 +62,15 @@ GB = 1024**3
 TIMEOUT_FACTOR = 5
 MIN_TIMEOUT_S = 3600
 
+# ffmpeg exits 251 (-EIO) when the iGPU hangs mid-encode and i915 resets the
+# video engine -- `dmesg` shows "Resetting vcs0 after gpu hang" a few seconds
+# later. The file is fine: fifteen of these in five days, and re-encoding the
+# span that died succeeded every time. So it earns one more go, after a pause
+# for the reset to finish, instead of a `failed` that nobody ever revisits.
+GPU_HANG_EXIT = 251
+GPU_HANG_RETRIES = 1
+GPU_HANG_PAUSE_S = 60
+
 
 @dataclass
 class JobResult:
@@ -252,6 +261,24 @@ def with_progress(cmd: list[str]) -> list[str]:
     return [cmd[0], "-progress", "pipe:1", "-nostats", *cmd[1:]]
 
 
+# What ffmpeg says on its way out is the muxer's byte count, the last progress
+# line and "Conversion failed!" -- never why. The cause is a line or two above,
+# tagged with the component that gave up.
+_ERROR_HINTS = ("error", "fail", "impossible", "invalid", "cannot", "unable",
+                "not implemented", "hang")
+
+
+def ffmpeg_error_summary(stderr: str | None, *, limit: int = 450) -> str:
+    """The lines of ffmpeg's stderr that explain a failure, joined into one."""
+    lines = [l.strip() for l in (stderr or "").splitlines() if l.strip()]
+    telling = [
+        l for l in lines
+        if any(h in l.lower() for h in _ERROR_HINTS) and l != "Conversion failed!"
+    ]
+    picked = telling[-4:] or lines[-3:]
+    return " | ".join(picked)[:limit]
+
+
 def _run_with_progress(
     cmd: list[str], *, timeout: int, nice: int = 0, on_progress=None
 ) -> tuple[int, str, float]:
@@ -397,27 +424,37 @@ def run_decision(
             progress(f"    {stream_plan.summary}")
         return result
 
-    job_id = _start_job(db, row, cmd, dest)
     timeout = max(MIN_TIMEOUT_S, int((row["est_cpu_seconds"] or 0) * TIMEOUT_FACTOR))
 
-    def report(seconds: float) -> None:
-        if info.duration_s > 0:
-            pct = min(100.0, 100.0 * seconds / info.duration_s)
-            db.execute("UPDATE job SET progress_pct=? WHERE id=?", (pct, job_id))
+    attempt = 0
+    while True:
+        attempt += 1
+        job_id = _start_job(db, row, cmd, dest, attempts=attempt)
 
-    code, stderr, elapsed = _run_with_progress(
-        cmd, timeout=timeout, nice=window.nice, on_progress=report
-    )
-    result.cpu_seconds = elapsed
+        def report(seconds: float, job_id: int = job_id) -> None:
+            if info.duration_s > 0:
+                pct = min(100.0, 100.0 * seconds / info.duration_s)
+                db.execute("UPDATE job SET progress_pct=? WHERE id=?", (pct, job_id))
 
-    if code != 0:
-        tail = " | ".join((stderr or "").strip().splitlines()[-3:])
-        message = f"encode failed ({code}): {tail[:300]}"
+        code, stderr, elapsed = _run_with_progress(
+            cmd, timeout=timeout, nice=window.nice, on_progress=report
+        )
+        result.cpu_seconds += elapsed
+
+        if code == 0:
+            break
+
+        message = f"encode failed ({code}): {ffmpeg_error_summary(stderr)}"
         dest.unlink(missing_ok=True)
+        retry = code == GPU_HANG_EXIT and attempt <= GPU_HANG_RETRIES
         _finish_job(db, job_id, "failed", elapsed, error=message)
-        _fail(db, row, message)
-        result.error = message
-        return result
+        if not retry:
+            _fail(db, row, message)
+            result.error = message
+            return result
+        if progress:
+            progress(f"      GPU hang ({code}); retrying in {GPU_HANG_PAUSE_S}s")
+        _sleep(GPU_HANG_PAUSE_S)
 
     # --- verification -------------------------------------------------------
     if progress:
@@ -734,12 +771,14 @@ def _run(
 # ------------------------------------------------------------------ db writes
 
 
-def _start_job(db: Database, row, cmd: list[str], dest: Path) -> int:
+def _start_job(
+    db: Database, row, cmd: list[str], dest: Path, *, attempts: int = 1
+) -> int:
     db.execute("UPDATE decision SET state='running' WHERE id=?", (row["id"],))
     db.execute(
         "INSERT INTO job (decision_id, state, attempts, cmd, scratch_path, started_at) "
-        "VALUES (?,'running',1,?,?,?)",
-        (row["id"], " ".join(cmd), str(dest), time.time()),
+        "VALUES (?,'running',?,?,?,?)",
+        (row["id"], attempts, " ".join(cmd), str(dest), time.time()),
     )
     return db.scalar("SELECT last_insert_rowid()")
 
