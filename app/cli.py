@@ -201,6 +201,14 @@ def cmd_work(args) -> int:
         count = worker.retry_failed(db)
         print(f"  {count} failed decision(s) put back in the queue.\n")
 
+    if args.recheck_quarantine:
+        print("  Re-verifying quarantined outputs. Nothing is re-encoded, and\n"
+              "  anything that passes lands on /review rather than installing "
+              "itself.\n")
+        recheck = worker.recheck_quarantined(db, config)
+        print(recheck.summary())
+        return 0
+
     if args.install_held:
         stats = worker.install_held(db, config)
         print(stats.summary())
@@ -612,6 +620,10 @@ def build_parser() -> argparse.ArgumentParser:
                       help="put previously failed decisions back in the queue")
     work.add_argument("--install-held", action="store_true",
                       help="install outputs already encoded and verified in scratch")
+    work.add_argument("--recheck-quarantine", action="store_true",
+                      help="re-verify quarantined outputs against the current "
+                           "checks; anything that passes becomes held for review "
+                           "without being re-encoded")
     work.add_argument("--forever", action="store_true",
                       help="never exit: work whenever the schedule allows and "
                            "sleep otherwise. The worker container's command")

@@ -307,6 +307,60 @@ def build_ffprobe_command(ffprobe: str, path: Path | str) -> list[str]:
     ]
 
 
+def measure_picture_end(
+    path: Path | str,
+    ffprobe: str = "ffprobe",
+    *,
+    hint_s: float,
+    tail_s: float = 600.0,
+    timeout: int = 120,
+) -> float | None:
+    """When the picture actually stops, read from the packets themselves.
+
+    `MediaInfo.v_duration_s` is a tag, and a Bluray rip's source file very often
+    has none on the video stream while the file ffmpeg writes from it always
+    does. Anything that compares the two lengths then has a tag on one side and
+    a container on the other -- see verify.check_structure, where exactly that
+    threw away seven good encodes.
+
+    Demuxing the whole file to find the last frame would cost minutes on a 17 GB
+    remux, so seek to `tail_s` before the end and take the largest timestamp
+    there. That is cheap (packet headers only, no decoding) and exact, provided
+    the picture ends somewhere in that window -- which is the case whenever the
+    overhang is a dub or a subtitle track running past the credits.
+
+    Returns None if it cannot be measured, and the caller must treat that as
+    "unknown", never as zero.
+    """
+    if hint_s <= 0:
+        return None
+    start = max(0.0, hint_s - tail_s)
+    cmd = [
+        ffprobe, "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "packet=pts_time",
+        "-of", "csv=p=0",
+        # START%+DURATION: read only the tail, not the file.
+        "-read_intervals", f"{start:.3f}%+{tail_s + 60:.0f}",
+        str(path),
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    latest = None
+    for token in result.stdout.split():
+        value = _to_float(token.strip().rstrip(","))
+        if value is not None and (latest is None or value > latest):
+            latest = value
+    return latest
+
+
 def parse_probe_json(path: str, size_bytes: int, data: dict) -> MediaInfo:
     fmt = data.get("format") or {}
     streams = data.get("streams") or []

@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.scan import probe as probe_module
 from app.scan.probe import MediaInfo, ProbeError, probe
 from app.work import vmaf
 
@@ -58,6 +59,31 @@ class Verification:
         return "; ".join(self.failures) or "failed"
 
 
+def _picture_end(info: MediaInfo, ffprobe: str) -> float | None:
+    """One file's picture length: the tag if it has one, else the packets."""
+    if info.v_duration_s:
+        return info.v_duration_s
+    return probe_module.measure_picture_end(
+        info.path, ffprobe, hint_s=info.duration_s
+    )
+
+
+def _paired_durations(
+    source: MediaInfo, output: MediaInfo, ffprobe: str
+) -> tuple[float, float, str]:
+    """Two lengths measured the same way, and the name of the clock used.
+
+    Never mixes a picture length with a container length: if either side cannot
+    give up its picture, both fall back to the container, which is the older and
+    blunter comparison but at least an honest one.
+    """
+    source_picture = _picture_end(source, ffprobe)
+    output_picture = _picture_end(output, ffprobe)
+    if source_picture and output_picture:
+        return source_picture, output_picture, "picture"
+    return source.duration_s, output.duration_s, "container"
+
+
 def check_structure(
     source: MediaInfo,
     output: Path,
@@ -91,10 +117,18 @@ def check_structure(
     # and the file is perfect. Six sound remuxes were refused as "truncated" for
     # this in the 2026-09 tier (38-270s of Italian, Russian, German or Polish
     # audio hanging off the end of a Bluray rip), 2.8% of everything attempted.
-    # Fall back to the container on either side when the picture's own length is
-    # not recorded, which is the older, blunter comparison.
-    reference = source.v_duration_s or source.duration_s
-    measured = info.v_duration_s or info.duration_s
+    #
+    # Getting the two lengths from different places is the same bug wearing a
+    # different hat, and it took a seventh file to see it: a source Bluray rip
+    # usually carries no DURATION tag on its video stream, while the file ffmpeg
+    # writes always does. Falling back per side then measured the output's
+    # picture against the source's *container* -- two clocks again. Pride (2014)
+    # died on a 58.3s gap that was its own AC3 track playing over the credits,
+    # present and identical in both files.
+    #
+    # So resolve both sides the same way: the tag if it is there, the packets if
+    # it is not, and only the container if neither side can do better.
+    reference, measured, clock = _paired_durations(source, info, ffprobe)
     tolerance = max(DURATION_TOLERANCE_MIN_S, reference * DURATION_TOLERANCE_PCT)
     if reference > 0:
         if measured <= 0:
@@ -102,7 +136,7 @@ def check_structure(
         elif abs(measured - reference) > tolerance:
             result.fail(
                 f"output is {measured:.1f}s against the source's "
-                f"{reference:.1f}s -- truncated or wrongly muxed"
+                f"{reference:.1f}s ({clock}) -- truncated or wrongly muxed"
             )
 
     if expect_height and info.v_height and abs(info.v_height - expect_height) > 8:

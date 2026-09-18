@@ -272,3 +272,113 @@ class TestActivityPage:
 
     def test_the_banner_says_dry_run_by_default(self, client):
         assert "nothing is encoded or deleted" in client.get("/").text
+
+
+def seed_held(db, *, name="Pride", state="held", saved=3 * GB, vmaf=95.5):
+    """One encoded, verified, uninstalled output -- what /review is made of."""
+    now = time.time()
+    db.execute(
+        "INSERT INTO media_file (path, library_root, size_bytes, mtime, "
+        "probe_version, probed_at, container, duration_s, v_codec, v_bit_depth, "
+        "v_width, v_height, hdr_type, audio_json, first_seen, last_seen, missing) "
+        "VALUES (?,?,?,?,1,?,'matroska,webm',7280.0,'h264',8,1920,1080,'sdr',?,?,?,0)",
+        (f"/media/movies/{name}.mkv", "/media/movies", 16 * GB, now, now,
+         json.dumps([{"codec": "ac3", "channels": 6}]), now, now),
+    )
+    file_id = db.scalar("SELECT last_insert_rowid()")
+    db.execute(
+        "INSERT INTO decision (file_id, action, profile, reason, est_saved_bytes, "
+        "priority, state, created_at) VALUES (?,'encode','hevc_vaapi qp19',"
+        "'worth encoding',?,1.0,?,?)",
+        (file_id, saved, state, now),
+    )
+    decision_id = db.scalar("SELECT last_insert_rowid()")
+    db.execute(
+        "INSERT INTO job (decision_id, state, attempts, scratch_path, started_at, "
+        "ended_at) VALUES (?,'done',1,?,?,?)",
+        (decision_id, f"/scratch/encoding/{name}.mkv", now - 3600, now),
+    )
+    job_id = db.scalar("SELECT last_insert_rowid()")
+    db.execute(
+        "INSERT INTO outcome (job_id, file_path, action, before_bytes, after_bytes, "
+        "saved_bytes, vmaf_mean, original_deleted, completed_at) "
+        "VALUES (?,?,'encode',?,?,?,?,0,?)",
+        (job_id, f"/media/movies/{name}.mkv", 16 * GB, 16 * GB - saved, saved,
+         vmaf, now),
+    )
+    return decision_id
+
+
+class TestReview:
+    def test_an_empty_queue_says_so(self, client):
+        assert "Nothing is waiting" in client.get("/review").text
+
+    def test_a_held_output_is_listed_with_its_score(self, client, db):
+        seed_held(db)
+        text = client.get("/review").text
+        assert "Pride" in text
+        assert "95.5" in text
+        assert "Approve" in text
+
+    def test_approving_does_not_touch_a_file(self, client, db, tmp_path):
+        """The button records a decision. The worker is what moves bytes."""
+        decision_id = seed_held(db)
+        original = tmp_path / "Pride.mkv"
+        original.write_bytes(b"the original")
+
+        response = client.post(f"/review/{decision_id}/approve", follow_redirects=False)
+        assert response.status_code == 303
+        assert db.scalar(
+            "SELECT state FROM decision WHERE id=?", (decision_id,)
+        ) == "approved"
+        assert original.read_bytes() == b"the original"
+
+    def test_rejecting_marks_it_for_discard(self, client, db):
+        decision_id = seed_held(db)
+        client.post(f"/review/{decision_id}/reject")
+        assert db.scalar(
+            "SELECT state FROM decision WHERE id=?", (decision_id,)
+        ) == "rejected_pending"
+
+    def test_undo_puts_it_back_before_the_worker_acts(self, client, db):
+        decision_id = seed_held(db)
+        client.post(f"/review/{decision_id}/approve")
+        client.post(f"/review/{decision_id}/undo")
+        assert db.scalar(
+            "SELECT state FROM decision WHERE id=?", (decision_id,)
+        ) == "held"
+
+    def test_a_second_click_cannot_resurrect_an_installed_decision(self, client, db):
+        """The worker deletes the decision once it installs it."""
+        decision_id = seed_held(db)
+        client.post(f"/review/{decision_id}/approve")
+        db.execute("DELETE FROM decision WHERE id=?", (decision_id,))
+
+        response = client.post(f"/review/{decision_id}/approve")
+        assert response.status_code == 200  # redirected to a page that renders
+        assert db.scalar("SELECT COUNT(*) FROM decision WHERE id=?", (decision_id,)) == 0
+
+    def test_the_cap_being_reached_is_called_out(self, db, tmp_path):
+        config = Config(config_dir=tmp_path)
+        config.safety.max_held = 2
+        client = TestClient(create_app(config=config, db=db))
+        seed_held(db, name="One")
+        seed_held(db, name="Two")
+
+        text = client.get("/review").text
+        assert "cap is reached" in text
+
+    def test_without_a_review_dir_the_page_warns_rather_than_inviting_approval(
+        self, client, db
+    ):
+        seed_held(db)
+        assert "review_dir is not set" in client.get("/review").text
+
+    def test_with_a_review_dir_it_shows_where_to_watch_it(self, db, tmp_path):
+        config = Config(config_dir=tmp_path)
+        config.safety.review_dir = "/media/vidsmasharr-test"
+        client = TestClient(create_app(config=config, db=db))
+        seed_held(db)
+
+        text = client.get("/review").text
+        assert "/media/vidsmasharr-test/Pride.mkv" in text

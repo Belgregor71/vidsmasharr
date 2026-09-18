@@ -62,6 +62,15 @@ GB = 1024**3
 TIMEOUT_FACTOR = 5
 MIN_TIMEOUT_S = 3600
 
+# ffmpeg exits 251 (-EIO) when the iGPU hangs mid-encode and i915 resets the
+# video engine -- `dmesg` shows "Resetting vcs0 after gpu hang" a few seconds
+# later. The file is fine: fifteen of these in five days, and re-encoding the
+# span that died succeeded every time. So it earns one more go, after a pause
+# for the reset to finish, instead of a `failed` that nobody ever revisits.
+GPU_HANG_EXIT = 251
+GPU_HANG_RETRIES = 1
+GPU_HANG_PAUSE_S = 60
+
 
 @dataclass
 class JobResult:
@@ -88,6 +97,11 @@ class WorkerStats:
     elapsed_s: float = 0.0
     stopped_because: str = ""
     hit_delete_ceiling: bool = False
+    # Held outputs a human approved or rejected on /review, acted on mid-run.
+    # Counted apart from `succeeded`, which means "encoded in this run" and is
+    # what the estimator is scored against.
+    installed: int = 0
+    discarded: int = 0
     results: list[JobResult] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -98,6 +112,9 @@ class WorkerStats:
             f"  reclaimed  {self.saved_bytes / GB:,.2f} GB",
             f"  originals deleted {self.deleted}",
         ]
+        if self.installed or self.discarded:
+            lines.append(f"  from review: {self.installed} installed, "
+                         f"{self.discarded} discarded")
         if self.elapsed_s:
             lines.append(f"  elapsed    {self.elapsed_s / 3600:.2f}h")
         if self.stopped_because:
@@ -242,6 +259,24 @@ def with_progress(cmd: list[str]) -> list[str]:
     than the carriage-return status line on stderr.
     """
     return [cmd[0], "-progress", "pipe:1", "-nostats", *cmd[1:]]
+
+
+# What ffmpeg says on its way out is the muxer's byte count, the last progress
+# line and "Conversion failed!" -- never why. The cause is a line or two above,
+# tagged with the component that gave up.
+_ERROR_HINTS = ("error", "fail", "impossible", "invalid", "cannot", "unable",
+                "not implemented", "hang")
+
+
+def ffmpeg_error_summary(stderr: str | None, *, limit: int = 450) -> str:
+    """The lines of ffmpeg's stderr that explain a failure, joined into one."""
+    lines = [l.strip() for l in (stderr or "").splitlines() if l.strip()]
+    telling = [
+        l for l in lines
+        if any(h in l.lower() for h in _ERROR_HINTS) and l != "Conversion failed!"
+    ]
+    picked = telling[-4:] or lines[-3:]
+    return " | ".join(picked)[:limit]
 
 
 def _run_with_progress(
@@ -389,27 +424,37 @@ def run_decision(
             progress(f"    {stream_plan.summary}")
         return result
 
-    job_id = _start_job(db, row, cmd, dest)
     timeout = max(MIN_TIMEOUT_S, int((row["est_cpu_seconds"] or 0) * TIMEOUT_FACTOR))
 
-    def report(seconds: float) -> None:
-        if info.duration_s > 0:
-            pct = min(100.0, 100.0 * seconds / info.duration_s)
-            db.execute("UPDATE job SET progress_pct=? WHERE id=?", (pct, job_id))
+    attempt = 0
+    while True:
+        attempt += 1
+        job_id = _start_job(db, row, cmd, dest, attempts=attempt)
 
-    code, stderr, elapsed = _run_with_progress(
-        cmd, timeout=timeout, nice=window.nice, on_progress=report
-    )
-    result.cpu_seconds = elapsed
+        def report(seconds: float, job_id: int = job_id) -> None:
+            if info.duration_s > 0:
+                pct = min(100.0, 100.0 * seconds / info.duration_s)
+                db.execute("UPDATE job SET progress_pct=? WHERE id=?", (pct, job_id))
 
-    if code != 0:
-        tail = " | ".join((stderr or "").strip().splitlines()[-3:])
-        message = f"encode failed ({code}): {tail[:300]}"
+        code, stderr, elapsed = _run_with_progress(
+            cmd, timeout=timeout, nice=window.nice, on_progress=report
+        )
+        result.cpu_seconds += elapsed
+
+        if code == 0:
+            break
+
+        message = f"encode failed ({code}): {ffmpeg_error_summary(stderr)}"
         dest.unlink(missing_ok=True)
+        retry = code == GPU_HANG_EXIT and attempt <= GPU_HANG_RETRIES
         _finish_job(db, job_id, "failed", elapsed, error=message)
-        _fail(db, row, message)
-        result.error = message
-        return result
+        if not retry:
+            _fail(db, row, message)
+            result.error = message
+            return result
+        if progress:
+            progress(f"      GPU hang ({code}); retrying in {GPU_HANG_PAUSE_S}s")
+        _sleep(GPU_HANG_PAUSE_S)
 
     # --- verification -------------------------------------------------------
     if progress:
@@ -628,6 +673,33 @@ def _run(
                 progress(f"  resumed after {minutes:.0f} min: {window.reason}")
             paused_since = None
 
+        # Anything approved on /review since the last pass. This sits inside the
+        # window check on purpose: installing is a multi-gigabyte copy off
+        # scratch onto the media volume, so it has to yield to Plex exactly the
+        # way an encode does. It sits *above* the review cap so that approving
+        # is what releases a worker the cap has stopped -- which is the whole
+        # point of the button.
+        if not dry_run:
+            done = install_approved(db, config, progress=progress)
+            discarded = discard_rejected(db, config, progress=progress)
+            if done.attempted or discarded:
+                stats.installed += done.succeeded
+                stats.discarded += discarded
+                stats.saved_bytes += done.saved_bytes
+                stats.deleted += done.deleted
+                deletes += done.deleted
+                if progress:
+                    parts = []
+                    if done.succeeded:
+                        parts.append(f"installed {done.succeeded} approved "
+                                     f"({done.saved_bytes / GB:.2f} GB reclaimed)")
+                    if done.failed:
+                        parts.append(f"{done.failed} would not install")
+                    if discarded:
+                        parts.append(f"discarded {discarded} rejected")
+                    if parts:
+                        progress(f"  review: {', '.join(parts)}")
+
         if deletes >= config.safety.max_deletes_per_run:
             stats.hit_delete_ceiling = True
             stats.stopped_because = (
@@ -699,12 +771,14 @@ def _run(
 # ------------------------------------------------------------------ db writes
 
 
-def _start_job(db: Database, row, cmd: list[str], dest: Path) -> int:
+def _start_job(
+    db: Database, row, cmd: list[str], dest: Path, *, attempts: int = 1
+) -> int:
     db.execute("UPDATE decision SET state='running' WHERE id=?", (row["id"],))
     db.execute(
         "INSERT INTO job (decision_id, state, attempts, cmd, scratch_path, started_at) "
-        "VALUES (?,'running',1,?,?,?)",
-        (row["id"], " ".join(cmd), str(dest), time.time()),
+        "VALUES (?,'running',?,?,?,?)",
+        (row["id"], attempts, " ".join(cmd), str(dest), time.time()),
     )
     return db.scalar("SELECT last_insert_rowid()")
 
@@ -883,7 +957,28 @@ def install_held(db: Database, config, *, progress=print) -> WorkerStats:
             "delete_original_on_success is off, so there is nowhere to install to"
         )
         return stats
+    return _install_outputs(db, config, state="held", progress=progress)
 
+
+def install_approved(db: Database, config, *, progress=print) -> WorkerStats:
+    """Install the outputs a human ticked off on /review, and only those.
+
+    Deliberately not gated on `delete_original_on_success`. That flag is the
+    blanket permission -- "install everything you verify, without asking" -- and
+    approving one file is a narrower, better-informed permission than the flag
+    can express. Requiring both would mean turning the blanket on to act on the
+    specific, which is precisely the window this page exists to close: the
+    worker re-reads config before every job, so a batch install used to mean a
+    few minutes during which a *newly finished* encode could delete an original
+    nobody had watched. A row marked `approved` was watched. Nothing else moves.
+    """
+    return _install_outputs(db, config, state="approved", progress=progress)
+
+
+def _install_outputs(
+    db: Database, config, *, state: str, progress=print
+) -> WorkerStats:
+    stats = WorkerStats()
     rows = db.query(
         """
         SELECT d.*, mf.path, mf.size_bytes, mf.library_root, j.scratch_path,
@@ -892,10 +987,20 @@ def install_held(db: Database, config, *, progress=print) -> WorkerStats:
         JOIN media_file mf ON mf.id = d.file_id
         JOIN job j ON j.decision_id = d.id AND j.state = 'done'
         LEFT JOIN title t ON t.id = d.title_id
-        WHERE d.state = 'held'
+        WHERE d.state = ?
         ORDER BY d.priority DESC
-        """
+        """,
+        (state,),
     )
+
+    # Say what is about to happen before the first multi-gigabyte copy starts,
+    # not after the last one finishes. Installing 19 approved outputs is an hour
+    # of silent disk work otherwise, and silence from the one operation that
+    # deletes originals reads as a hung worker.
+    if progress and rows:
+        total = sum(row["size_bytes"] or 0 for row in rows)
+        progress(f"  installing {len(rows)} {state} output(s), "
+                 f"{total / GB:,.1f} GB of originals to replace ...")
     for row in rows:
         stats.attempted += 1
         output = Path(row["scratch_path"] or "")
@@ -960,6 +1065,188 @@ def install_held(db: Database, config, *, progress=print) -> WorkerStats:
         db.execute("DELETE FROM decision WHERE id=?", (row["id"],))
 
     return stats
+
+
+@dataclass
+class RecheckStats:
+    examined: int = 0
+    recovered: int = 0
+    still_failing: int = 0
+    missing: int = 0
+    saved_bytes: int = 0
+
+    def summary(self) -> str:
+        return (
+            f"  examined       {self.examined}\n"
+            f"  recovered      {self.recovered}  "
+            f"({self.saved_bytes / GB:,.2f} GB of encoding rescued)\n"
+            f"  still failing  {self.still_failing}\n"
+            f"  gone           {self.missing}"
+        )
+
+
+def recheck_quarantined(db: Database, config, *, progress=print) -> RecheckStats:
+    """Re-verify outputs a since-fixed verifier threw away, without re-encoding.
+
+    A verification bug does not damage anything -- the output is quarantined,
+    not deleted, and the original is untouched -- but the CPU that produced it
+    is gone unless the file can be judged again. Seven files in the 2026-09 tier
+    were rejected by a duration check that compared a picture length on one side
+    with a container length on the other; they are still on disk and still good.
+
+    Anything that passes now re-enters the normal flow as `held`, which means it
+    appears on /review for a human rather than installing itself. A re-check is
+    not an approval.
+    """
+    stats = RecheckStats()
+    rows = db.query(
+        """
+        SELECT d.*, mf.path, mf.size_bytes, j.id AS job_id, j.error,
+               j.scratch_path, t.kind AS title_kind
+        FROM decision d
+        JOIN media_file mf ON mf.id = d.file_id
+        JOIN job j ON j.decision_id = d.id AND j.state = 'failed'
+        LEFT JOIN title t ON t.id = d.title_id
+        WHERE d.state = 'failed'
+        ORDER BY d.priority DESC
+        """
+    )
+
+    quarantine_dir = Path(config.scratch_dir) / "quarantine"
+    for row in rows:
+        # The quarantine path is recorded in the error text, and the file keeps
+        # its name; prefer the recorded path and fall back to the name.
+        name = Path(row["scratch_path"] or row["path"]).name
+        candidate = quarantine_dir / name
+        if not candidate.exists():
+            stats.missing += 1
+            continue
+
+        stats.examined += 1
+        try:
+            info = probe(Path(row["path"]), config.ffprobe)
+        except ProbeError as exc:
+            stats.still_failing += 1
+            if progress:
+                progress(f"  {name}: source will not probe: {exc}")
+            continue
+
+        detail = json.loads(row["detail_json"] or "{}")
+        structure = verify.check_structure(
+            info, candidate, ffprobe=config.ffprobe,
+            expect_codec=None if row["action"] == REMUX else "hevc",
+            expect_height=detail.get("target_height"),
+        )
+        if not structure.ok:
+            stats.still_failing += 1
+            if progress:
+                progress(f"  {name}: still fails -- {structure.summary}")
+            continue
+
+        # Structure only re-runs the cheap checks. An encode that never got as
+        # far as VMAF has no score, and a score is the thing a human leans on
+        # when approving, so pay for it now rather than show a dash on /review.
+        quality = None
+        if row["action"] in (ENCODE, DOWNSCALE):
+            target = detail.get("target_vmaf") or (
+                config.quality.movie_vmaf
+                if (row["title_kind"] or "").lower() == "movie"
+                else config.quality.tv_vmaf
+            )
+            if progress:
+                progress(f"  {name}: structure is sound, scoring it ...")
+            quality = verify.check_quality(
+                Path(row["path"]), candidate, source=info, config=config,
+                target_vmaf=float(target),
+                work_dir=Path(config.scratch_dir) / "vmaf",
+                downscaled=bool(detail.get("target_height")),
+                threads=max(1, config.schedule.night_threads // 2),
+                progress=None,
+            )
+
+        verdict = verify.merge(structure, quality)
+        if not verdict.ok:
+            stats.still_failing += 1
+            if progress:
+                progress(f"  {name}: {verdict.summary}")
+            continue
+
+        # Back where a held output lives, so install and review find it by the
+        # same path everything else uses.
+        encoding_dir = Path(config.scratch_dir) / "encoding"
+        encoding_dir.mkdir(parents=True, exist_ok=True)
+        restored = encoding_dir / name
+        try:
+            candidate.replace(restored)
+        except OSError as exc:
+            stats.still_failing += 1
+            if progress:
+                progress(f"  {name}: could not move it back: {exc}")
+            continue
+
+        out_bytes = verdict.out_info.size_bytes if verdict.out_info else 0
+        stats.recovered += 1
+        stats.saved_bytes += max(0, row["size_bytes"] - out_bytes)
+
+        db.execute(
+            "UPDATE job SET state='done', error=NULL, scratch_path=?, vmaf_json=? "
+            "WHERE id=?",
+            (str(restored), _vmaf_json(verdict), row["job_id"]),
+        )
+        db.execute(
+            "UPDATE decision SET state='held', reason=? WHERE id=?",
+            ("re-verified after a verifier fix; never re-encoded", row["id"]),
+        )
+        if config.safety.review_dir:
+            copy = swap.copy_for_review(restored, Path(config.safety.review_dir))
+            if progress:
+                progress(f"  {name}: recovered"
+                         + (f", copy to watch at {copy}" if copy else ""))
+        elif progress:
+            progress(f"  {name}: recovered")
+
+    return stats
+
+
+def discard_rejected(db: Database, config, *, progress=print) -> int:
+    """Throw away outputs a human turned down on /review. Returns how many.
+
+    The original was never touched -- these outputs have been sitting in scratch
+    the whole time -- so rejecting costs nothing but the encode, and the file on
+    the volume is the one it always was. The decision is left `rejected` rather
+    than deleted so the planner does not queue the same encode again tonight and
+    present the same bad output tomorrow.
+    """
+    rows = db.query(
+        """
+        SELECT d.id, j.scratch_path FROM decision d
+        LEFT JOIN job j ON j.decision_id = d.id AND j.state = 'done'
+        WHERE d.state = 'rejected_pending'
+        """
+    )
+    for row in rows:
+        for path in _review_copies(config, row["scratch_path"]):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                if progress:
+                    progress(f"  could not remove {path}: {exc}")
+        db.execute(
+            "UPDATE decision SET state='rejected', reason=? WHERE id=?",
+            ("turned down on review; the original was never replaced", row["id"]),
+        )
+    return len(rows)
+
+
+def _review_copies(config, scratch_path: str | None) -> list[Path]:
+    """The output in scratch and the watchable copy made beside the library."""
+    if not scratch_path:
+        return []
+    output = Path(scratch_path)
+    paths = [output]
+    if config.safety.review_dir:
+        paths.append(Path(config.safety.review_dir) / output.name)
+    return paths
 
 
 def retry_failed(db: Database) -> int:

@@ -348,6 +348,55 @@ class TestStructuralChecks:
         assert not result.ok
         assert "truncated" in result.summary
 
+    def test_a_tagless_source_is_measured_rather_than_compared_to_its_container(
+        self, tmp_path, monkeypatch
+    ):
+        """The Pride (2014) case: the seventh file lost to the same mistake.
+
+        The source is a Bluray rip with no DURATION tag on its video stream, so
+        its only recorded length is the container's -- which runs to the AC3
+        track, 58.3s past the end of the picture. The output ffmpeg wrote does
+        carry the tag. Comparing one against the other reported a 58.3s
+        truncation in a file whose every timestamp matched the source's.
+        """
+        out = self._output(tmp_path)
+        source = fake_info(duration_s=7280.7, v_duration_s=None, size_bytes=15 * GB)
+        monkeypatch.setattr(
+            verify, "probe",
+            lambda p, f: fake_info(
+                v_codec="hevc", duration_s=7280.7, v_duration_s=7222.4,
+                size_bytes=6 * GB,
+            ),
+        )
+        # The source's picture is not tagged, so it gets measured from packets.
+        monkeypatch.setattr(
+            verify.probe_module, "measure_picture_end",
+            lambda path, ffprobe, **kw: 7222.3,
+        )
+        result = verify.check_structure(source, out, ffprobe="ffprobe")
+        assert result.ok, result.summary
+
+    def test_an_unmeasurable_source_falls_back_on_both_sides_at_once(
+        self, tmp_path, monkeypatch
+    ):
+        """Never a picture on one side and a container on the other."""
+        out = self._output(tmp_path)
+        source = fake_info(duration_s=7280.7, v_duration_s=None, size_bytes=15 * GB)
+        monkeypatch.setattr(
+            verify, "probe",
+            lambda p, f: fake_info(
+                v_codec="hevc", duration_s=7280.7, v_duration_s=7222.4,
+                size_bytes=6 * GB,
+            ),
+        )
+        monkeypatch.setattr(
+            verify.probe_module, "measure_picture_end",
+            lambda path, ffprobe, **kw: None,
+        )
+        result = verify.check_structure(source, out, ffprobe="ffprobe")
+        # Container against container: 7280.7 both sides, so still a pass.
+        assert result.ok, result.summary
+
     def test_losing_the_audio_is_caught(self, tmp_path, monkeypatch):
         out = self._output(tmp_path)
         monkeypatch.setattr(
@@ -1153,3 +1202,327 @@ class TestSafetyCeilings:
         stats = worker.install_held(db, config, progress=None)
         assert stats.attempted == 0
         assert "delete_original_on_success is off" in stats.stopped_because
+
+
+class TestApprovalFromReview:
+    """Approving one output is a narrower permission than the master switch.
+
+    `delete_original_on_success` says "install everything you verify, without
+    asking". Ticking one file on /review says something better informed than
+    that, and must not require turning the blanket switch on -- doing so used to
+    open a window in which a *newly finished* encode could delete an original
+    nobody had watched, because the worker re-reads config before every job.
+    """
+
+    def _held(self, db, config, tmp_path, monkeypatch, *, state="approved"):
+        recorder = TestTheRecordItLeaves()
+        recorder.succeed(db, config, tmp_path, monkeypatch, delete=False)
+        assert db.scalar("SELECT state FROM decision") == "held"
+
+        scratch = db.scalar("SELECT scratch_path FROM job")
+        Path(scratch).parent.mkdir(parents=True, exist_ok=True)
+        Path(scratch).write_bytes(b"0" * 1500)
+        db.execute("UPDATE decision SET state=?", (state,))
+        monkeypatch.setattr(
+            verify, "check_structure",
+            lambda *a, **k: verify.Verification(
+                ok=True, out_info=fake_info(size_bytes=1500)
+            ),
+        )
+        return scratch
+
+    def test_an_approved_output_installs_with_the_master_switch_still_off(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        self._held(db, config, tmp_path, monkeypatch)
+        assert config.safety.delete_original_on_success is False
+
+        stats = worker.install_approved(db, config, progress=None)
+
+        assert stats.succeeded == 1
+        assert stats.deleted == 1
+        assert db.scalar("SELECT COUNT(*) FROM decision") == 0
+        assert db.one("SELECT * FROM outcome")["original_deleted"] == 1
+
+    def test_a_held_output_nobody_approved_is_left_alone(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        self._held(db, config, tmp_path, monkeypatch, state="held")
+
+        stats = worker.install_approved(db, config, progress=None)
+
+        assert stats.attempted == 0
+        assert db.scalar("SELECT state FROM decision") == "held"
+
+    def test_install_held_still_refuses_without_the_master_switch(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        """The batch path keeps its old gate; only per-file approval bypasses it."""
+        self._held(db, config, tmp_path, monkeypatch, state="held")
+
+        stats = worker.install_held(db, config, progress=None)
+
+        assert stats.attempted == 0
+        assert "delete_original_on_success is off" in stats.stopped_because
+
+    def test_rejecting_removes_both_copies_and_never_the_original(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        review = tmp_path / "review"
+        review.mkdir()
+        config.safety.review_dir = review
+        scratch = self._held(db, config, tmp_path, monkeypatch,
+                             state="rejected_pending")
+        watchable = review / Path(scratch).name
+        watchable.write_bytes(b"0" * 1500)
+        original = Path(db.scalar("SELECT path FROM media_file"))
+
+        assert worker.discard_rejected(db, config, progress=None) == 1
+
+        assert not Path(scratch).exists()
+        assert not watchable.exists()
+        assert original.exists(), "the original was never the file under review"
+        assert db.scalar("SELECT state FROM decision") == "rejected"
+
+    def test_a_rejected_decision_is_not_replanned_as_pending(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        self._held(db, config, tmp_path, monkeypatch, state="rejected_pending")
+        worker.discard_rejected(db, config, progress=None)
+
+        assert worker.next_decision(db) is None
+
+
+class TestRecheckingQuarantine:
+    """A verifier bug costs CPU, not data -- provided the output can be rejudged."""
+
+    def _quarantine(self, db, config, tmp_path, monkeypatch):
+        recorder = TestTheRecordItLeaves()
+        recorder.succeed(db, config, tmp_path, monkeypatch, delete=False)
+        scratch = Path(db.scalar("SELECT scratch_path FROM job"))
+
+        # Put it where a failed verification would have left it.
+        quarantine = Path(config.scratch_dir) / "quarantine"
+        quarantine.mkdir(parents=True, exist_ok=True)
+        held = quarantine / scratch.name
+        held.write_bytes(b"0" * 1500)
+        db.execute(
+            "UPDATE job SET state='failed', error=? ",
+            (f"output is 7222.4s against the source's 7280.7s (kept at {held})",),
+        )
+        db.execute("UPDATE decision SET state='failed'")
+        db.execute("DELETE FROM outcome")
+        return held
+
+    def test_an_output_that_passes_now_becomes_held_not_installed(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        held = self._quarantine(db, config, tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            verify, "check_structure",
+            lambda *a, **k: verify.Verification(
+                ok=True, out_info=fake_info(size_bytes=1500)
+            ),
+        )
+        monkeypatch.setattr(
+            verify, "check_quality",
+            lambda *a, **k: verify.Verification(
+                ok=True, vmaf_mean=95.5, out_info=fake_info(size_bytes=1500)
+            ),
+        )
+        original = Path(db.scalar("SELECT path FROM media_file"))
+
+        stats = worker.recheck_quarantined(db, config, progress=None)
+
+        assert stats.recovered == 1
+        assert db.scalar("SELECT state FROM decision") == "held"
+        assert db.scalar("SELECT state FROM job") == "done"
+        # Moved back out of quarantine, and the original still untouched.
+        assert not held.exists()
+        assert Path(db.scalar("SELECT scratch_path FROM job")).exists()
+        assert original.exists()
+
+    def test_it_is_scored_so_review_has_something_to_show(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        """The encode failed structurally, so VMAF never ran the first time."""
+        self._quarantine(db, config, tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            verify, "check_structure",
+            lambda *a, **k: verify.Verification(
+                ok=True, out_info=fake_info(size_bytes=1500)
+            ),
+        )
+        scored = []
+        monkeypatch.setattr(
+            verify, "check_quality",
+            lambda *a, **k: scored.append(1) or verify.Verification(
+                ok=True, vmaf_mean=95.5, out_info=fake_info(size_bytes=1500)
+            ),
+        )
+
+        worker.recheck_quarantined(db, config, progress=None)
+
+        assert scored, "an encode must be scored before a human is asked to approve it"
+        assert "95.5" in (db.scalar("SELECT vmaf_json FROM job") or "")
+
+    def test_one_that_still_fails_stays_quarantined(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        held = self._quarantine(db, config, tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            verify, "check_structure",
+            lambda *a, **k: verify.Verification(ok=False, failures=["really truncated"]),
+        )
+
+        stats = worker.recheck_quarantined(db, config, progress=None)
+
+        assert stats.recovered == 0
+        assert stats.still_failing == 1
+        assert held.exists()
+        assert db.scalar("SELECT state FROM decision") == "failed"
+
+
+class TestInstallIsAudible:
+    """An hour of silent disk work reads as a hung worker.
+
+    Installing approved outputs is a multi-gigabyte copy per file, and it is the
+    one operation that deletes originals. It has to announce itself before the
+    first copy starts and report each file as it lands, not summarise once the
+    whole batch is done.
+    """
+
+    def test_the_batch_announces_itself_before_any_copying(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        approval = TestApprovalFromReview()
+        approval._held(db, config, tmp_path, monkeypatch)
+        said = []
+
+        worker.install_approved(db, config, progress=said.append)
+
+        assert said, "installing said nothing at all"
+        assert "installing 1 approved output(s)" in said[0]
+        assert "GB of originals to replace" in said[0]
+        assert any("installed" in line for line in said[1:]), said
+
+    def test_the_loop_passes_its_progress_through(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        """The regression: the loop used to call it with progress=None."""
+        approval = TestApprovalFromReview()
+        approval._held(db, config, tmp_path, monkeypatch)
+        said = []
+
+        monkeypatch.setattr(
+            schedule, "may_work_now",
+            lambda cfg: schedule.WorkWindow(True, 4, 0, "test", is_night=True),
+        )
+        worker.run(db, config, limit=1, execute=True, progress=said.append)
+
+        assert any("installing 1 approved" in line for line in said), said
+
+
+# Real stderr tails from the failures reviewed on 2026-09-17.
+GPU_HANG_STDERR = """\
+frame=84769 fps= 41 q=-0.0 size= 2470000KiB time=00:58:55.00 bitrate=5741.1kbits/s speed=1.69x
+[vf#0:0 @ 0x55cd883a8d00] Error while filtering: Input/output error
+[vf#0:0 @ 0x55cd883a8d00] Task finished with error code: -5 (Input/output error)
+[out#0/matroska @ 0x55cd883a8d00] video:2170329KiB audio:279715KiB subtitle:26236KiB muxing overhead: 0.060581%
+frame=84769 fps= 41 q=-0.0 Lsize= 2477780KiB time=00:58:55.53 bitrate=5741.1kbits/s speed=1.69x
+Conversion failed!
+"""
+
+REINIT_STDERR = """\
+[h264 @ 0x55c1add95540] SEI type 0 overread by 8 bits
+Impossible to convert between the formats supported by the filter 'Parsed_null_0' and the filter 'auto_scale_0'
+[vf#0:0 @ 0x55c1adcb3b80] Error reinitializing filters!
+[vf#0:0 @ 0x55c1adcb3b80] Task finished with error code: -38 (Function not implemented)
+[out#0/matroska @ 0x5611737917c0] video:2496KiB audio:440KiB subtitle:0KiB muxing overhead: 0.147426%
+frame=  101 fps= 33 q=-0.0 Lsize=    2939KiB time=00:00:04.33 bitrate=5551.4kbits/s speed=1.43x
+Conversion failed!
+"""
+
+
+class TestEncodeFailures:
+    """Exit 251 is the iGPU hanging, not the file; everything else is the file."""
+
+    def run_with_exits(self, db, config, tmp_path, monkeypatch, exits):
+        source, _, _ = seed_job(db, tmp_path)
+        config.safety.dry_run = False
+        monkeypatch.setattr(worker, "probe", lambda p, f: fake_info(path=str(source)))
+        outcomes = iter(exits)
+
+        def fake_run(cmd, timeout, nice=0, on_progress=None):
+            code, stderr = next(outcomes)
+            return code, stderr, 100.0
+
+        monkeypatch.setattr(worker, "_run_with_progress", fake_run)
+        slept: list[float] = []
+        monkeypatch.setattr(worker, "_sleep", slept.append)
+        # Anything that gets as far as verification is a success for these tests.
+        monkeypatch.setattr(
+            verify, "check_structure",
+            lambda *a, **k: verify.Verification(ok=False, failures=["stop here"]),
+        )
+        monkeypatch.setattr(swap, "quarantine", lambda *a, **k: None)
+
+        said: list[str] = []
+        row = worker.next_decision(db)
+        window = schedule.WorkWindow(True, 4, 0, "test", is_night=True)
+        result = worker.run_decision(
+            db, config, row, window=window, dry_run=False, progress=said.append
+        )
+        return result, slept, said
+
+    def test_a_gpu_hang_gets_one_more_go(self, db, config, tmp_path, monkeypatch):
+        result, slept, said = self.run_with_exits(
+            db, config, tmp_path, monkeypatch,
+            [(251, GPU_HANG_STDERR), (0, "")],
+        )
+
+        assert "encode failed" not in (result.error or "")
+        assert slept == [worker.GPU_HANG_PAUSE_S]
+        assert any("GPU hang" in line for line in said), said
+        jobs = db.query("SELECT state, attempts FROM job ORDER BY id")
+        assert [(j["state"], j["attempts"]) for j in jobs][0] == ("failed", 1)
+        assert jobs[1]["attempts"] == 2
+        assert result.cpu_seconds == 200.0  # both attempts cost CPU
+
+    def test_a_second_gpu_hang_fails_the_decision(
+        self, db, config, tmp_path, monkeypatch
+    ):
+        result, slept, _ = self.run_with_exits(
+            db, config, tmp_path, monkeypatch,
+            [(251, GPU_HANG_STDERR), (251, GPU_HANG_STDERR)],
+        )
+
+        assert result.error.startswith("encode failed (251)")
+        assert len(slept) == 1
+        assert db.scalar("SELECT state FROM decision") == "failed"
+        assert db.scalar("SELECT COUNT(*) FROM job WHERE state='failed'") == 2
+
+    def test_other_exits_are_not_retried(self, db, config, tmp_path, monkeypatch):
+        result, slept, _ = self.run_with_exits(
+            db, config, tmp_path, monkeypatch, [(218, REINIT_STDERR)],
+        )
+
+        assert slept == []
+        assert db.scalar("SELECT state FROM decision") == "failed"
+        assert db.scalar("SELECT COUNT(*) FROM job") == 1
+        assert "Error reinitializing filters" in result.error
+
+
+class TestFfmpegErrorSummary:
+    def test_it_keeps_the_cause_not_the_byte_count(self):
+        summary = worker.ffmpeg_error_summary(REINIT_STDERR)
+        assert "Impossible to convert" in summary
+        assert "Function not implemented" in summary
+        assert "muxing overhead" not in summary
+        assert "Conversion failed!" not in summary
+
+    def test_it_falls_back_to_the_tail_when_nothing_looks_like_an_error(self):
+        assert worker.ffmpeg_error_summary("a\nb\nc\nd") == "b | c | d"
+
+    def test_nothing_is_nothing(self):
+        assert worker.ffmpeg_error_summary(None) == ""
