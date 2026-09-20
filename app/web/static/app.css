@@ -92,7 +92,8 @@ button.ghost { background: transparent; color: var(--muted); }
 .group > footer { margin-top: 0.6rem; }
 .ep { color: var(--muted); font-weight: 500; font-size: 13px; }
 
-.members td.mark { width: 3.5rem; color: var(--good); font-size: 11px; font-weight: 700; letter-spacing: 0.05em; }
+.members td.mark { width: 6.5rem; color: var(--good); font-size: 11px; font-weight: 700; letter-spacing: 0.05em; white-space: nowrap; }
+.mark-inline { color: var(--good); font-size: 11px; font-weight: 700; letter-spacing: 0.05em; }
 .members tr.keeper { background: rgba(111, 207, 151, 0.06); }
 .members td.act form { margin: 0; }
 

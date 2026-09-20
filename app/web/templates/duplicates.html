@@ -6,6 +6,8 @@
 <p class="note">
   This is a report. Nothing here deletes, moves or queues a file &mdash; choosing a
   keeper only records your decision so the next rebuild leaves the group alone.
+  The row marked <span class="mark-inline">SUGGESTED</span> is this tool's pick, not
+  a decision: confirm it or keep a different copy.
 </p>
 
 <div class="toolbar">
@@ -44,7 +46,7 @@
     <tbody>
     {% for member in members[group.id] %}
       <tr class="{{ 'keeper' if member.id == group.keeper_file_id }}">
-        <td class="mark">{{ 'KEEP' if member.id == group.keeper_file_id else '' }}</td>
+        <td class="mark">{{ 'SUGGESTED' if member.id == group.keeper_file_id else '' }}</td>
         <td class="path" title="{{ member.path }}">{{ member.path }}</td>
         <td>
           <code>{{ member.v_codec or '?' }}</code>
@@ -56,12 +58,12 @@
         <td class="n">{{ member.duration_s | duration }}</td>
         <td class="n">{{ member.size_bytes | bytes }}</td>
         <td class="act">
-          {% if member.id != group.keeper_file_id %}
           <form method="post" action="/duplicates/{{ group.id }}/keeper">
             <input type="hidden" name="file_id" value="{{ member.id }}">
-            <button type="submit">Keep this one</button>
+            <button type="submit">
+              {{ 'Confirm this one' if member.id == group.keeper_file_id else 'Keep this one' }}
+            </button>
           </form>
-          {% endif %}
         </td>
       </tr>
     {% endfor %}

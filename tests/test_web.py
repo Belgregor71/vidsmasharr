@@ -88,6 +88,8 @@ class TestPages:
         assert response.status_code == 200
         assert "The Show" in response.text
         assert "1.00 GB" in response.text  # reclaimable = the 720p copy
+        # Every copy can be chosen, including the one already suggested.
+        assert response.text.count("/keeper") == 2
 
     def test_duplicates_filter_needs_human(self, client, db):
         seed_duplicate(db)
@@ -121,6 +123,21 @@ class TestActionsAreReportOnly:
         assert row["status"] == "chosen"
         # Reclaimable is recomputed against the new keeper.
         assert row["reclaimable_bytes"] == 4 * GB
+
+    def test_confirming_the_suggested_keeper_closes_the_group(self, client, db):
+        """The suggested row is a proposal, so it needs a button of its own."""
+        seed_duplicate(db)
+        group = db.one("SELECT id, keeper_file_id FROM duplicate_group")
+
+        client.post(
+            f"/duplicates/{group['id']}/keeper",
+            data={"file_id": group["keeper_file_id"]},
+        )
+
+        row = db.one("SELECT * FROM duplicate_group")
+        assert row["keeper_file_id"] == group["keeper_file_id"]
+        assert row["status"] == "chosen"
+        assert row["needs_human"] == 0
 
     def test_dismiss_survives_a_rebuild(self, client, db):
         seed_duplicate(db)
