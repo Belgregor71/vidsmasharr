@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32"
+     role="img" aria-label="vidsmasharr">
+  <title>vidsmasharr</title>
+  <!-- A play triangle held between two plates: video, pressed down to size.
+       Blue tile rather than the app's dark panel so the mark keeps its
+       contrast against a light *and* a dark browser tab strip. The gaps
+       either side of the triangle are wide on purpose - at 16px a unit is
+       half a pixel, and anything tighter closes up into a blob. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6fb6ef"/>
+      <stop offset="1" stop-color="#3d8ccb"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="7" fill="url(#tile)"/>
+  <g fill="#14161a">
+    <rect x="8.5" y="4.8" width="15" height="2.8" rx="1.4"/>
+    <rect x="8.5" y="24.4" width="15" height="2.8" rx="1.4"/>
+    <path d="M12.6 11.5 L22.2 16 L12.6 20.5 Z"
+          stroke="#14161a" stroke-width="1.5" stroke-linejoin="round"/>
+  </g>
+</svg>

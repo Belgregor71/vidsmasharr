@@ -1,4 +1,6 @@
 import json
+import re
+import struct
 import time
 
 import pytest
@@ -382,3 +384,38 @@ class TestReview:
 
         text = client.get("/review").text
         assert "/media/vidsmasharr-test/Pride.mkv" in text
+
+
+class TestFavicon:
+    def test_the_root_path_browsers_actually_ask_for_is_served(self, client):
+        response = client.get("/favicon.ico")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/x-icon"
+
+    def test_the_ico_carries_the_three_sizes_the_link_tag_advertises(self, client):
+        blob = client.get("/favicon.ico").content
+        reserved, kind, count = struct.unpack("<HHH", blob[:6])
+
+        assert (reserved, kind) == (0, 1)
+        widths = []
+        for i in range(count):
+            entry = blob[6 + 16 * i : 22 + 16 * i]
+            width, _, _, _, _, _, size, offset = struct.unpack("<BBBBHHII", entry)
+            widths.append(width or 256)
+            # A zero-length or dangling entry renders as a blank tab, which is
+            # worse than no favicon at all.
+            assert blob[offset : offset + size].startswith(b"\x89PNG\r\n\x1a\n")
+        assert widths == [16, 32, 48]
+
+    def test_every_icon_the_page_links_to_exists(self, client):
+        head = client.get("/").text
+
+        hrefs = re.findall(r'<link rel="[^"]*icon[^"]*" href="([^"]+)"', head)
+        assert sorted(hrefs) == [
+            "/static/apple-touch-icon.png",
+            "/static/favicon.ico",
+            "/static/favicon.svg",
+        ]
+        for href in hrefs:
+            assert client.get(href).status_code == 200, href

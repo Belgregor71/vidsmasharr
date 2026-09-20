@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -70,6 +71,13 @@ def create_app(config: Config | None = None, db: Database | None = None) -> Fast
     static_dir = WEB_DIR / "static"
     static_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    # Browsers that ignore the <link> tags -- and anything bookmarking the app
+    # -- ask for /favicon.ico at the root, which would otherwise 404 on every
+    # page load and clutter the log.
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> FileResponse:
+        return FileResponse(static_dir / "favicon.ico", media_type="image/x-icon")
 
     from app.web.routes import ui
 
